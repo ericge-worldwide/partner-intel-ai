@@ -5,3 +5,4 @@ langchain-google-genai
 langchain-community
 fpdf2
 tavily-python
+pysqlite3-binary

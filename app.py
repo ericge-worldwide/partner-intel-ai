@@ -3,7 +3,7 @@ import os
 import textwrap 
 from crewai import Agent, Task, Crew, Process
 from crewai.tools import BaseTool
-from crewai_tools import ScrapeWebsiteTool # <--- THE NEW HIRE
+from crewai_tools import ScrapeWebsiteTool
 from langchain_community.tools.tavily_search import TavilySearchResults
 from fpdf import FPDF
 from datetime import datetime
@@ -11,7 +11,7 @@ from datetime import datetime
 # --- 1. CUSTOM TOOL WRAPPER ---
 class CustomSearchTool(BaseTool):
     name: str = "search_tool"
-    description: str = "Searches the internet for information about a company."
+    description: str = "Searches the internet for information about a company or person."
 
     def _run(self, query: str) -> str:
         search = TavilySearchResults(k=10)
@@ -31,15 +31,15 @@ class IntelligenceReport(FPDF):
 def sanitize_text(text):
     return str(text).encode('latin-1', 'replace').decode('latin-1')
 
-def create_pdf(report_text, company_name):
+def create_pdf(report_text, target_name):
     safe_report = sanitize_text(report_text)
-    safe_company = sanitize_text(company_name)
+    safe_target = sanitize_text(target_name)
     
     pdf = IntelligenceReport()
     pdf.add_page()
     
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, f"Subject: {safe_company}", ln=True)
+    pdf.cell(0, 10, f"Subject: {safe_target}", ln=True)
     pdf.ln(10)
     
     pdf.set_font("Helvetica", size=11)
@@ -73,57 +73,71 @@ with st.sidebar:
     tavily_key = st.text_input("Tavily API Key", type="password")
 
 st.title("🕵️‍♂️ Business Partner Due Diligence")
-company_name = st.text_input("Target Company Name", placeholder="e.g., Apple Inc.")
+
+# Required Field
+target_name = st.text_input("Target Name (Company or Person) *", placeholder="e.g., Apple Inc. or John Smith")
+
+# Optional Fields hidden neatly inside an expander
+with st.expander("⚙️ Optional Search Criteria (Recommended for People)"):
+    location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
+    industry = st.text_input("Industry or Specialty", placeholder="e.g., Real Estate Attorney")
+    extra_context = st.text_area("Additional Context", placeholder="e.g., Former partner at XYZ Law Firm")
 
 if st.button("Start AI Investigation"):
     if not google_key or not tavily_key:
         st.error("Please provide both API keys in the sidebar.")
+    elif not target_name:
+        st.warning("Please enter a Target Name to begin.")
     else:
+        # --- THE ENRICHMENT LOGIC ---
+        search_context = target_name
+        if location:
+            search_context += f", located in {location}"
+        if industry:
+            search_context += f", specializing in {industry}"
+        if extra_context:
+            search_context += f". Additional details: {extra_context}"
+
         os.environ["GEMINI_API_KEY"] = google_key
         os.environ["TAVILY_API_KEY"] = tavily_key
         
         gemini_model_string = "gemini/gemini-2.5-flash"
         
-        # --- EQUIP THE TOOLS ---
         search_tool = CustomSearchTool()
-        scrape_tool = ScrapeWebsiteTool() # <--- INITIALIZING THE SCRAPER
+        scrape_tool = ScrapeWebsiteTool() 
 
         with st.status("🕵️ Agents are collaborating...", expanded=True) as status:
             
-            # --- AGENT 1: OSINT ---
             investigator = Agent(
                 role='OSINT Lead',
-                goal='Uncover public history and founders for {company_name}',
+                goal='Uncover public history and background for {company_name}',
                 backstory='Specialist in digital footprinting.',
-                tools=[search_tool, scrape_tool], # <--- DUAL WIELDING
+                tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
                 allow_delegation=False
             )
             
-            # --- AGENT 2: LEGAL ---
             legal_auditor = Agent(
                 role='Legal Compliance Specialist',
                 goal='Find lawsuits or regulatory issues for {company_name}',
                 backstory='Expert in court filings and regulatory compliance.',
-                tools=[search_tool, scrape_tool], # <--- DUAL WIELDING
+                tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
                 allow_delegation=False
             )
 
-            # --- AGENT 3: FINANCIAL ---
             financial_analyst = Agent(
                 role='Corporate Financial Analyst',
                 goal='Find revenue figures, funding rounds, and financial health indicators for {company_name}',
-                backstory='Wall Street veteran who specializes in reading the financial health of public and private companies.',
-                tools=[search_tool, scrape_tool], # <--- DUAL WIELDING
+                backstory='Wall Street veteran who specializes in reading the financial health of public and private entities.',
+                tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
                 allow_delegation=False
             )
             
-            # --- AGENT 4: RISK MANAGER ---
             risk_manager = Agent(
                 role='Senior Risk Analyst',
                 goal='Create a final 1-10 risk score and executive summary using OSINT, Legal, and Financial data.',
@@ -133,10 +147,9 @@ if st.button("Start AI Investigation"):
                 allow_delegation=False
             )
 
-            # TASKS
             t1 = Task(
-                description="Gather founder names, HQ location, and general news for {company_name}. If you find a good link, scrape it.",
-                expected_output="A summary of the company background.",
+                description="Gather background, location, and general news for {company_name}. If you find a good link, scrape it.",
+                expected_output="A summary of the subject's background.",
                 agent=investigator
             )
             
@@ -147,8 +160,8 @@ if st.button("Start AI Investigation"):
             )
 
             t3 = Task(
-                description="Search for recent revenue, VC funding rounds, or financial instability regarding {company_name}. Scrape financial press releases.",
-                expected_output="A brief report on the company's financial footprint.",
+                description="Search for recent revenue, funding, or financial instability regarding {company_name}. Scrape relevant press releases.",
+                expected_output="A brief report on the subject's financial footprint.",
                 agent=financial_analyst
             )
             
@@ -158,7 +171,6 @@ if st.button("Start AI Investigation"):
                 agent=risk_manager
             )
 
-            # CREW 
             crew = Crew(
                 agents=[investigator, legal_auditor, financial_analyst, risk_manager],
                 tasks=[t1, t2, t3, t4],
@@ -166,16 +178,16 @@ if st.button("Start AI Investigation"):
                 verbose=True
             )
             
-            result = crew.kickoff(inputs={'company_name': company_name})
+            result = crew.kickoff(inputs={'company_name': search_context})
             status.update(label="Investigation Complete!", state="complete")
 
         st.subheader("Final Intelligence Report")
         st.markdown(result)
         
-        pdf_bytes = create_pdf(str(result), company_name)
+        pdf_bytes = create_pdf(str(result), target_name)
         st.download_button(
             label="📥 Download PDF Report", 
             data=bytes(pdf_bytes), 
-            file_name=f"Report_{sanitize_text(company_name).replace(' ', '_')}.pdf", 
+            file_name=f"Report_{sanitize_text(target_name).replace(' ', '_')}.pdf", 
             mime="application/pdf"
         )

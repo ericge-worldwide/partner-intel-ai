@@ -5,6 +5,7 @@ from crewai import Agent, Task, Crew, Process
 from crewai.tools import BaseTool
 from crewai_tools import ScrapeWebsiteTool
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_google_genai import ChatGoogleGenerativeAI # <-- NEW: For the Chatbot
 from fpdf import FPDF
 from datetime import datetime
 
@@ -67,6 +68,14 @@ def create_pdf(report_text, target_name):
 # --- 3. STREAMLIT INTERFACE ---
 st.set_page_config(page_title="Partner Intel AI", page_icon="🕵️‍♂️", layout="wide")
 
+# Initialize Session State Variables
+if "report_result" not in st.session_state:
+    st.session_state.report_result = None
+if "report_target" not in st.session_state:
+    st.session_state.report_target = None
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
 with st.sidebar:
     st.header("🔑 API Keys")
     google_key = st.text_input("Gemini API Key", type="password")
@@ -74,10 +83,8 @@ with st.sidebar:
 
 st.title("🕵️‍♂️ Business Partner Due Diligence")
 
-# Required Field
 target_name = st.text_input("Target Name (Company or Person) *", placeholder="e.g., Apple Inc. or John Smith")
 
-# Optional Fields hidden neatly inside an expander
 with st.expander("⚙️ Optional Search Criteria (Recommended for People)"):
     location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
     industry = st.text_input("Industry or Specialty", placeholder="e.g., Real Estate Attorney")
@@ -89,7 +96,9 @@ if st.button("Start AI Investigation"):
     elif not target_name:
         st.warning("Please enter a Target Name to begin.")
     else:
-        # --- THE ENRICHMENT LOGIC ---
+        # Clear previous chat history if starting a new search
+        st.session_state.chat_messages = []
+        
         search_context = target_name
         if location:
             search_context += f", located in {location}"
@@ -102,7 +111,6 @@ if st.button("Start AI Investigation"):
         os.environ["TAVILY_API_KEY"] = tavily_key
         
         gemini_model_string = "gemini/gemini-2.5-flash"
-        
         search_tool = CustomSearchTool()
         scrape_tool = ScrapeWebsiteTool() 
 
@@ -179,15 +187,52 @@ if st.button("Start AI Investigation"):
             )
             
             result = crew.kickoff(inputs={'company_name': search_context})
+            
+            # --- THE FIX: Save the results to memory ---
+            st.session_state.report_result = str(result)
+            st.session_state.report_target = target_name
             status.update(label="Investigation Complete!", state="complete")
 
-        st.subheader("Final Intelligence Report")
-        st.markdown(result)
-        
-        pdf_bytes = create_pdf(str(result), target_name)
-        st.download_button(
-            label="📥 Download PDF Report", 
-            data=bytes(pdf_bytes), 
-            file_name=f"Report_{sanitize_text(target_name).replace(' ', '_')}.pdf", 
-            mime="application/pdf"
-        )
+# --- DISPLAY THE REPORT & CHATBOT ---
+if st.session_state.report_result:
+    st.markdown("---")
+    st.subheader("Final Intelligence Report")
+    st.markdown(st.session_state.report_result)
+    
+    pdf_bytes = create_pdf(st.session_state.report_result, st.session_state.report_target)
+    st.download_button(
+        label="📥 Download PDF Report", 
+        data=bytes(pdf_bytes), 
+        file_name=f"Report_{sanitize_text(st.session_state.report_target).replace(' ', '_')}.pdf", 
+        mime="application/pdf"
+    )
+
+    # --- THE CHATBOT UI ---
+    st.markdown("---")
+    st.subheader("💬 Ask the Report")
+    st.caption("Ask specific questions about the data uncovered above.")
+
+    # Display past chat messages
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # The Chat Input Box
+    if user_question := st.chat_input("E.g., What was the outcome of the lawsuit in 2019?"):
+        if not google_key:
+            st.error("Please enter your Gemini API Key in the sidebar to use the chat.")
+        else:
+            # 1. Display user message
+            st.chat_message("user").markdown(user_question)
+            st.session_state.chat_messages.append({"role": "user", "content": user_question})
+
+            # 2. Ask Gemini the question using the report as context
+            chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
+            prompt = f"Context (Intelligence Report):\n{st.session_state.report_result}\n\nUser Question: {user_question}\n\nPlease answer the question using ONLY the provided context."
+            
+            with st.spinner("Analyzing report..."):
+                response = chat_llm.invoke(prompt)
+                
+            # 3. Display AI answer
+            st.chat_message("assistant").markdown(response.content)
+            st.session_state.chat_messages.append({"role": "assistant", "content": response.content})

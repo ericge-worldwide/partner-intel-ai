@@ -76,7 +76,7 @@ if "report_target" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
 if "comms_drafts" not in st.session_state:
-    st.session_state.comms_drafts = None # <--- NEW: Memory for the drafts
+    st.session_state.comms_drafts = None 
 
 with st.sidebar:
     st.header("🔑 API Keys")
@@ -156,27 +156,28 @@ if st.button("Start AI Investigation"):
                 allow_delegation=False
             )
 
+            # --- THE NEW TASKS WITH TRANSLATION MANDATES ---
             t1 = Task(
-                description="Gather background, location, and general news for {company_name}. If you find a good link, scrape it.",
-                expected_output="A summary of the subject's background.",
+                description="Gather background, location, and general news for {company_name}. If you find a good link, scrape it. If the target is international, search foreign sources and translate all findings.",
+                expected_output="A summary of the subject's background, written STRICTLY in English.",
                 agent=investigator
             )
             
             t2 = Task(
-                description="Search for litigation, patents, or regulatory fines involving {company_name}. Scrape legal articles for details.",
-                expected_output="A report detailing legal red flags.",
+                description="Search for litigation, patents, or regulatory fines involving {company_name}. Scrape legal articles for details. Translate any foreign legal documents or news into English.",
+                expected_output="A report detailing legal red flags, written STRICTLY in English.",
                 agent=legal_auditor
             )
 
             t3 = Task(
-                description="Search for recent revenue, funding, or financial instability regarding {company_name}. Scrape relevant press releases.",
-                expected_output="A brief report on the subject's financial footprint.",
+                description="Search for recent revenue, funding, or financial instability regarding {company_name}. Scrape relevant press releases. Convert any foreign financial data into English summaries.",
+                expected_output="A brief report on the subject's financial footprint, written STRICTLY in English.",
                 agent=financial_analyst
             )
             
             t4 = Task(
                 description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score.",
-                expected_output="A finalized executive summary including a risk score.",
+                expected_output="A finalized executive summary including a risk score, written entirely in professional English.",
                 agent=risk_manager
             )
 
@@ -191,9 +192,8 @@ if st.button("Start AI Investigation"):
             st.session_state.report_result = str(result)
             st.session_state.report_target = target_name
             
-            status.update(label="Drafting Communications...", state="running") # Update the loading text
+            status.update(label="Drafting Communications...", state="running")
             
-            # --- THE NEW FEATURE: Auto-drafting the emails ---
             chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
             comms_prompt = f"Based on the following due diligence report, please draft two things:\n1. A professional, 3-bullet-point email draft for an executive summarizing the key risks and findings. Include a Subject Line.\n2. A short, punchy Slack message with emojis to alert the team that the report is ready and highlight the risk score.\n\nReport:\n{st.session_state.report_result}"
             
@@ -216,13 +216,11 @@ if st.session_state.report_result:
         mime="application/pdf"
     )
 
-    # --- SHOW COMMS DRAFTS ---
     if st.session_state.comms_drafts:
         st.markdown("---")
         with st.expander("📬 Quick Share: Auto-Generated Email & Slack Drafts", expanded=True):
             st.markdown(st.session_state.comms_drafts)
 
-    # --- THE CHATBOT UI ---
     st.markdown("---")
     st.subheader("💬 Ask the Report")
     st.caption("Ask specific questions about the data uncovered above.")

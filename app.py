@@ -5,7 +5,7 @@ from crewai import Agent, Task, Crew, Process
 from crewai.tools import BaseTool
 from crewai_tools import ScrapeWebsiteTool
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_google_genai import ChatGoogleGenerativeAI # <-- NEW: For the Chatbot
+from langchain_google_genai import ChatGoogleGenerativeAI 
 from fpdf import FPDF
 from datetime import datetime
 
@@ -75,6 +75,8 @@ if "report_target" not in st.session_state:
     st.session_state.report_target = None
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
+if "comms_drafts" not in st.session_state:
+    st.session_state.comms_drafts = None # <--- NEW: Memory for the drafts
 
 with st.sidebar:
     st.header("🔑 API Keys")
@@ -96,7 +98,6 @@ if st.button("Start AI Investigation"):
     elif not target_name:
         st.warning("Please enter a Target Name to begin.")
     else:
-        # Clear previous chat history if starting a new search
         st.session_state.chat_messages = []
         
         search_context = target_name
@@ -187,13 +188,21 @@ if st.button("Start AI Investigation"):
             )
             
             result = crew.kickoff(inputs={'company_name': search_context})
-            
-            # --- THE FIX: Save the results to memory ---
             st.session_state.report_result = str(result)
             st.session_state.report_target = target_name
+            
+            status.update(label="Drafting Communications...", state="running") # Update the loading text
+            
+            # --- THE NEW FEATURE: Auto-drafting the emails ---
+            chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
+            comms_prompt = f"Based on the following due diligence report, please draft two things:\n1. A professional, 3-bullet-point email draft for an executive summarizing the key risks and findings. Include a Subject Line.\n2. A short, punchy Slack message with emojis to alert the team that the report is ready and highlight the risk score.\n\nReport:\n{st.session_state.report_result}"
+            
+            comms_response = chat_llm.invoke(comms_prompt)
+            st.session_state.comms_drafts = comms_response.content
+            
             status.update(label="Investigation Complete!", state="complete")
 
-# --- DISPLAY THE REPORT & CHATBOT ---
+# --- DISPLAY THE REPORT & COMMS & CHATBOT ---
 if st.session_state.report_result:
     st.markdown("---")
     st.subheader("Final Intelligence Report")
@@ -207,32 +216,33 @@ if st.session_state.report_result:
         mime="application/pdf"
     )
 
+    # --- SHOW COMMS DRAFTS ---
+    if st.session_state.comms_drafts:
+        st.markdown("---")
+        with st.expander("📬 Quick Share: Auto-Generated Email & Slack Drafts", expanded=True):
+            st.markdown(st.session_state.comms_drafts)
+
     # --- THE CHATBOT UI ---
     st.markdown("---")
     st.subheader("💬 Ask the Report")
     st.caption("Ask specific questions about the data uncovered above.")
 
-    # Display past chat messages
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # The Chat Input Box
     if user_question := st.chat_input("E.g., What was the outcome of the lawsuit in 2019?"):
         if not google_key:
             st.error("Please enter your Gemini API Key in the sidebar to use the chat.")
         else:
-            # 1. Display user message
             st.chat_message("user").markdown(user_question)
             st.session_state.chat_messages.append({"role": "user", "content": user_question})
 
-            # 2. Ask Gemini the question using the report as context
             chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
             prompt = f"Context (Intelligence Report):\n{st.session_state.report_result}\n\nUser Question: {user_question}\n\nPlease answer the question using ONLY the provided context."
             
             with st.spinner("Analyzing report..."):
                 response = chat_llm.invoke(prompt)
                 
-            # 3. Display AI answer
             st.chat_message("assistant").markdown(response.content)
             st.session_state.chat_messages.append({"role": "assistant", "content": response.content})

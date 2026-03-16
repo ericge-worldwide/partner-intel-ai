@@ -8,7 +8,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_google_genai import ChatGoogleGenerativeAI 
 from fpdf import FPDF
 from datetime import datetime
-from unidecode import unidecode # <--- NEW: The Smart Text Translator
+from unidecode import unidecode
 
 # --- 1. CUSTOM TOOL WRAPPER ---
 class CustomSearchTool(BaseTool):
@@ -31,7 +31,6 @@ class IntelligenceReport(FPDF):
         self.cell(0, 10, f"Generated {datetime.now().strftime('%Y-%m-%d')} | Page {self.page_no()}", align="C")
 
 def sanitize_text(text):
-    # THE FIX: Unidecode turns "Ś" to "S" instead of dropping a "?"
     if text is None:
         return ""
     return unidecode(str(text))
@@ -95,6 +94,19 @@ with st.expander("⚙️ Optional Search Criteria (Recommended for People)"):
     industry = st.text_input("Industry or Specialty", placeholder="e.g., Real Estate Attorney")
     extra_context = st.text_area("Additional Context", placeholder="e.g., Former partner at XYZ Law Firm")
 
+st.markdown("### 🗄️ Deep Dive Databases (Optional, takes longer)")
+col1, col2, col3 = st.columns(3)
+with col1:
+    use_sec = st.checkbox("🏛️ SEC Financials (10-K/10-Q)")
+with col2:
+    use_courts = st.checkbox("⚖️ Federal Court Dockets")
+with col3:
+    use_registry = st.checkbox("🏢 Corporate Registry")
+
+# --- THE FIX: DYNAMIC WARNING NOTE ---
+if use_sec or use_courts or use_registry:
+    st.info("⏱️ **Extended Wait Time:** Deep dive databases require the AI to read massive legal and financial documents and navigate government rate limits. This investigation may take up to **5 minutes**. Please do not refresh the page while the agents are working.")
+
 if st.button("Start AI Investigation"):
     if not google_key or not tavily_key:
         st.error("Please provide both API keys in the sidebar.")
@@ -120,6 +132,7 @@ if st.button("Start AI Investigation"):
 
         with st.status("🕵️ Agents are collaborating...", expanded=True) as status:
             
+            # --- THE FIX: ADDING max_execution_time=300 (5 minutes per agent) ---
             investigator = Agent(
                 role='OSINT Lead',
                 goal='Uncover public history and background for {company_name}',
@@ -127,7 +140,8 @@ if st.button("Start AI Investigation"):
                 tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
-                allow_delegation=False
+                allow_delegation=False,
+                max_execution_time=300 
             )
             
             legal_auditor = Agent(
@@ -137,7 +151,8 @@ if st.button("Start AI Investigation"):
                 tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
-                allow_delegation=False
+                allow_delegation=False,
+                max_execution_time=300
             )
 
             financial_analyst = Agent(
@@ -147,7 +162,8 @@ if st.button("Start AI Investigation"):
                 tools=[search_tool, scrape_tool], 
                 llm=gemini_model_string, 
                 verbose=True, 
-                allow_delegation=False
+                allow_delegation=False,
+                max_execution_time=300
             )
             
             risk_manager = Agent(
@@ -156,32 +172,27 @@ if st.button("Start AI Investigation"):
                 backstory='Veteran consultant who compiles intelligence into clear business red flags.',
                 llm=gemini_model_string, 
                 verbose=True, 
-                allow_delegation=False
+                allow_delegation=False,
+                max_execution_time=300
             )
 
-            t1 = Task(
-                description="Gather background, location, and general news for {company_name}. If you find a good link, scrape it. If the target is international, search foreign sources and translate all findings.",
-                expected_output="A summary of the subject's background, written STRICTLY in English.",
-                agent=investigator
-            )
+            t1_desc = "Gather background, location, and general news for {company_name}. If you find a good link, scrape it. Translate foreign findings to English."
+            t2_desc = "Search for litigation, patents, or regulatory fines involving {company_name}. Scrape legal articles for details. Translate foreign legal documents to English."
+            t3_desc = "Search for recent revenue, funding, or financial instability regarding {company_name}. Scrape relevant press releases. Translate foreign financial data to English."
             
-            t2 = Task(
-                description="Search for litigation, patents, or regulatory fines involving {company_name}. Scrape legal articles for details. Translate any foreign legal documents or news into English.",
-                expected_output="A report detailing legal red flags, written STRICTLY in English.",
-                agent=legal_auditor
-            )
+            if use_registry:
+                t1_desc += " CRITICAL: You MUST use the search tool to query 'site:opencorporates.com {company_name}' to find and verify their official corporate registry details."
+            
+            if use_courts:
+                t2_desc += " CRITICAL: You MUST use the search tool to query 'site:courtlistener.com {company_name}' to find specific federal court dockets and opinions."
+                
+            if use_sec:
+                t3_desc += " CRITICAL: You MUST use the search tool to query 'site:sec.gov {company_name} 10-K' to find and summarize their official SEC filings."
 
-            t3 = Task(
-                description="Search for recent revenue, funding, or financial instability regarding {company_name}. Scrape relevant press releases. Convert any foreign financial data into English summaries.",
-                expected_output="A brief report on the subject's financial footprint, written STRICTLY in English.",
-                agent=financial_analyst
-            )
-            
-            t4 = Task(
-                description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score. Today's date is {current_date}. Make sure to include this exact date at the top of the report.",
-                expected_output="A finalized executive summary including a risk score, written entirely in professional English.",
-                agent=risk_manager
-            )
+            t1 = Task(description=t1_desc, expected_output="A summary of the subject's background, written STRICTLY in English.", agent=investigator)
+            t2 = Task(description=t2_desc, expected_output="A report detailing legal red flags, written STRICTLY in English.", agent=legal_auditor)
+            t3 = Task(description=t3_desc, expected_output="A brief report on the subject's financial footprint, written STRICTLY in English.", agent=financial_analyst)
+            t4 = Task(description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score. Today's date is {current_date}. Make sure to include this exact date at the top of the report.", expected_output="A finalized executive summary including a risk score, written entirely in professional English.", agent=risk_manager)
 
             crew = Crew(
                 agents=[investigator, legal_auditor, financial_analyst, risk_manager],

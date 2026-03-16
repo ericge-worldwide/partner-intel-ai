@@ -8,6 +8,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_google_genai import ChatGoogleGenerativeAI 
 from fpdf import FPDF
 from datetime import datetime
+from unidecode import unidecode # <--- NEW: The Smart Text Translator
 
 # --- 1. CUSTOM TOOL WRAPPER ---
 class CustomSearchTool(BaseTool):
@@ -30,7 +31,10 @@ class IntelligenceReport(FPDF):
         self.cell(0, 10, f"Generated {datetime.now().strftime('%Y-%m-%d')} | Page {self.page_no()}", align="C")
 
 def sanitize_text(text):
-    return str(text).encode('latin-1', 'replace').decode('latin-1')
+    # THE FIX: Unidecode turns "Ś" to "S" instead of dropping a "?"
+    if text is None:
+        return ""
+    return unidecode(str(text))
 
 def create_pdf(report_text, target_name):
     safe_report = sanitize_text(report_text)
@@ -173,7 +177,6 @@ if st.button("Start AI Investigation"):
                 agent=financial_analyst
             )
             
-            # --- THE FIX: We added {current_date} to the instructions ---
             t4 = Task(
                 description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score. Today's date is {current_date}. Make sure to include this exact date at the top of the report.",
                 expected_output="A finalized executive summary including a risk score, written entirely in professional English.",
@@ -187,7 +190,6 @@ if st.button("Start AI Investigation"):
                 verbose=True
             )
             
-            # --- THE FIX: We pass the live date straight into the AI ---
             current_date_str = datetime.now().strftime('%B %d, %Y')
             result = crew.kickoff(inputs={
                 'company_name': search_context, 

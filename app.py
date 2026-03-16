@@ -68,7 +68,6 @@ def create_pdf(report_text, target_name):
 # --- 3. STREAMLIT INTERFACE ---
 st.set_page_config(page_title="Partner Intel AI", page_icon="🕵️‍♂️", layout="wide")
 
-# Initialize Session State Variables
 if "report_result" not in st.session_state:
     st.session_state.report_result = None
 if "report_target" not in st.session_state:
@@ -156,7 +155,6 @@ if st.button("Start AI Investigation"):
                 allow_delegation=False
             )
 
-            # --- THE NEW TASKS WITH TRANSLATION MANDATES ---
             t1 = Task(
                 description="Gather background, location, and general news for {company_name}. If you find a good link, scrape it. If the target is international, search foreign sources and translate all findings.",
                 expected_output="A summary of the subject's background, written STRICTLY in English.",
@@ -175,8 +173,9 @@ if st.button("Start AI Investigation"):
                 agent=financial_analyst
             )
             
+            # --- THE FIX: We added {current_date} to the instructions ---
             t4 = Task(
-                description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score.",
+                description="Combine the OSINT background, legal history, and financial data into a comprehensive report with a 1-10 Risk Score. Today's date is {current_date}. Make sure to include this exact date at the top of the report.",
                 expected_output="A finalized executive summary including a risk score, written entirely in professional English.",
                 agent=risk_manager
             )
@@ -188,7 +187,13 @@ if st.button("Start AI Investigation"):
                 verbose=True
             )
             
-            result = crew.kickoff(inputs={'company_name': search_context})
+            # --- THE FIX: We pass the live date straight into the AI ---
+            current_date_str = datetime.now().strftime('%B %d, %Y')
+            result = crew.kickoff(inputs={
+                'company_name': search_context, 
+                'current_date': current_date_str
+            })
+            
             st.session_state.report_result = str(result)
             st.session_state.report_target = target_name
             

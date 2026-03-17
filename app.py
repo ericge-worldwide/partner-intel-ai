@@ -103,7 +103,6 @@ with col2:
 with col3:
     use_registry = st.checkbox("🏢 Corporate Registry")
 
-# --- THE FIX: DYNAMIC WARNING NOTE ---
 if use_sec or use_courts or use_registry:
     st.info("⏱️ **Extended Wait Time:** Deep dive databases require the AI to read massive legal and financial documents and navigate government rate limits. This investigation may take up to **5 minutes**. Please do not refresh the page while the agents are working.")
 
@@ -132,7 +131,6 @@ if st.button("Start AI Investigation"):
 
         with st.status("🕵️ Agents are collaborating...", expanded=True) as status:
             
-            # --- THE FIX: ADDING max_execution_time=300 (5 minutes per agent) ---
             investigator = Agent(
                 role='OSINT Lead',
                 goal='Uncover public history and background for {company_name}',
@@ -202,23 +200,29 @@ if st.button("Start AI Investigation"):
             )
             
             current_date_str = datetime.now().strftime('%B %d, %Y')
-            result = crew.kickoff(inputs={
-                'company_name': search_context, 
-                'current_date': current_date_str
-            })
             
-            st.session_state.report_result = str(result)
-            st.session_state.report_target = target_name
-            
-            status.update(label="Drafting Communications...", state="running")
-            
-            chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
-            comms_prompt = f"Based on the following due diligence report, please draft two things:\n1. A professional, 3-bullet-point email draft for an executive summarizing the key risks and findings. Include a Subject Line.\n2. A short, punchy Slack message with emojis to alert the team that the report is ready and highlight the risk score.\n\nReport:\n{st.session_state.report_result}"
-            
-            comms_response = chat_llm.invoke(comms_prompt)
-            st.session_state.comms_drafts = comms_response.content
-            
-            status.update(label="Investigation Complete!", state="complete")
+            try:
+                result = crew.kickoff(inputs={
+                    'company_name': search_context, 
+                    'current_date': current_date_str
+                })
+                
+                st.session_state.report_result = str(result)
+                st.session_state.report_target = target_name
+                
+                status.update(label="Drafting Communications...", state="running")
+                
+                chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
+                comms_prompt = f"Based on the following due diligence report, please draft two things:\n1. A professional, 3-bullet-point email draft for an executive summarizing the key risks and findings. Include a Subject Line.\n2. A short, punchy Slack message with emojis to alert the team that the report is ready and highlight the risk score.\n\nReport:\n{st.session_state.report_result}"
+                
+                comms_response = chat_llm.invoke(comms_prompt)
+                st.session_state.comms_drafts = comms_response.content
+                
+                status.update(label="Investigation Complete!", state="complete")
+                
+            except Exception as e:
+                status.update(label="Investigation Failed due to an Error.", state="error")
+                st.error(f"🚨 **The AI encountered a fatal error:** {str(e)}")
 
 # --- DISPLAY THE REPORT & COMMS & CHATBOT ---
 if st.session_state.report_result:
@@ -239,6 +243,7 @@ if st.session_state.report_result:
         with st.expander("📬 Quick Share: Auto-Generated Email & Slack Drafts", expanded=True):
             st.markdown(st.session_state.comms_drafts)
 
+    # --- THE CHATBOT UI (Now with Crash Protection & Memory) ---
     st.markdown("---")
     st.subheader("💬 Ask the Report")
     st.caption("Ask specific questions about the data uncovered above.")
@@ -254,11 +259,17 @@ if st.session_state.report_result:
             st.chat_message("user").markdown(user_question)
             st.session_state.chat_messages.append({"role": "user", "content": user_question})
 
-            chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
-            prompt = f"Context (Intelligence Report):\n{st.session_state.report_result}\n\nUser Question: {user_question}\n\nPlease answer the question using ONLY the provided context."
+            chat_history_text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat_messages[:-1]])
             
-            with st.spinner("Analyzing report..."):
-                response = chat_llm.invoke(prompt)
+            prompt = f"Context (Intelligence Report):\n{st.session_state.report_result}\n\nPast Chat History:\n{chat_history_text}\n\nUser's New Question: {user_question}\n\nPlease answer the question using ONLY the provided context."
+            
+            try:
+                with st.spinner("Analyzing report..."):
+                    chat_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key)
+                    response = chat_llm.invoke(prompt)
+                    
+                st.chat_message("assistant").markdown(response.content)
+                st.session_state.chat_messages.append({"role": "assistant", "content": response.content})
                 
-            st.chat_message("assistant").markdown(response.content)
-            st.session_state.chat_messages.append({"role": "assistant", "content": response.content})
+            except Exception as e:
+                st.error(f"⚠️ **Chat Error:** The AI encountered a glitch (likely a momentary rate limit). Your report is safe! Try asking again in a few seconds. \n\n*Technical Details: {str(e)}*")

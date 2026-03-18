@@ -852,55 +852,43 @@ with st.sidebar:
 st.title("🕵️‍♂️ Business Partner Due Diligence")
 
 # --- Investigation History & Comparison (top of page) ---
-if st.session_state.investigation_history:
-    with st.expander(f"📁 Investigation History ({len(st.session_state.investigation_history)} reports)", expanded=False):
+history_count = len(st.session_state.investigation_history)
+if history_count > 0:
+    st.success(f"📁 **{history_count} investigation(s) on file.** Expand below to view or compare.")
+    with st.expander("📁 Investigation History", expanded=False):
         for i, past in enumerate(reversed(st.session_state.investigation_history)):
             risk_preview = ""
-            score_m = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', past.get("report", ""), re.IGNORECASE)
-            if score_m:
-                s = float(score_m.group(1))
-                if s <= 3.0:
-                    risk_preview = "🟢"
-                elif s <= 5.0:
-                    risk_preview = "🟡"
-                elif s <= 7.0:
-                    risk_preview = "🟠"
-                else:
-                    risk_preview = "🔴"
-                risk_preview = f" {risk_preview} Risk: {s:.1f}/10"
+            try:
+                score_m = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', past.get("report", ""), re.IGNORECASE)
+                if score_m:
+                    s = float(score_m.group(1))
+                    if s <= 3.0:
+                        risk_preview = " 🟢 Risk: {:.1f}/10".format(s)
+                    elif s <= 5.0:
+                        risk_preview = " 🟡 Risk: {:.1f}/10".format(s)
+                    elif s <= 7.0:
+                        risk_preview = " 🟠 Risk: {:.1f}/10".format(s)
+                    else:
+                        risk_preview = " 🔴 Risk: {:.1f}/10".format(s)
+            except Exception:
+                risk_preview = ""
 
-            col_info, col_load, col_dl = st.columns([4, 1, 1])
-            with col_info:
-                st.markdown(f"**{past['target']}**{risk_preview} — {past['date']}")
-            with col_load:
-                if st.button("Load", key=f"load_{i}"):
-                    st.session_state.report_result = past["report"]
-                    st.session_state.report_target = past["target"]
-                    st.session_state.report_sections = chunk_report(past["report"])
-                    st.session_state.comms_drafts = past.get("comms")
-                    st.session_state.chat_messages = []
-                    st.rerun()
-            with col_dl:
-                pdf_bytes_hist = create_pdf(past["report"], past["target"])
-                st.download_button(
-                    "PDF",
-                    data=bytes(pdf_bytes_hist),
-                    file_name=f"Report_{sanitize_text(past['target']).replace(' ', '_')}.pdf",
-                    mime="application/pdf",
-                    key=f"dl_{i}",
-                )
-
-        st.markdown("---")
+            st.markdown(f"**{past['target']}**{risk_preview} — _{past['date']}_")
+            if st.button(f"Load Report: {past['target']}", key=f"load_{i}"):
+                st.session_state.report_result = past["report"]
+                st.session_state.report_target = past["target"]
+                st.session_state.report_sections = chunk_report(past["report"])
+                st.session_state.comms_drafts = past.get("comms")
+                st.session_state.chat_messages = []
+                st.rerun()
+            st.markdown("---")
 
         # Comparison tool
-        if len(st.session_state.investigation_history) >= 2:
+        if history_count >= 2:
             st.markdown("#### ⚖️ Compare Two Subjects")
             compare_options = [f"{h['target']} ({h['date']})" for h in st.session_state.investigation_history]
-            comp_col1, comp_col2 = st.columns(2)
-            with comp_col1:
-                compare_a = st.selectbox("Subject A", compare_options, index=0)
-            with comp_col2:
-                compare_b = st.selectbox("Subject B", compare_options, index=min(1, len(compare_options) - 1))
+            compare_a = st.selectbox("Subject A", compare_options, index=0)
+            compare_b = st.selectbox("Subject B", compare_options, index=min(1, len(compare_options) - 1))
 
             if st.button("Run Comparison"):
                 def get_hist_entry(label):

@@ -293,35 +293,99 @@ class PeopleRecordsTool(BaseTool):
     description: str = (
         "Performs targeted searches for an individual across public records databases "
         "including professional licenses, FEC political donations, and disciplinary actions. "
-        "Provide the person's full name and optionally their state/profession."
+        "Input should be formatted as: 'Name | Location1, Location2' "
+        "where locations are all known jurisdictions (residence, work, license states). "
+        "If no locations are known, just provide the name."
     )
 
     def _run(self, query: str) -> str:
         search = TavilySearchResults(k=5)
-        targeted_queries = [
-            f'"{query}" professional license OR licensed OR certification',
-            f'"{query}" FEC political donation OR campaign contribution',
-            f'"{query}" disciplinary action OR suspended OR revoked OR sanctioned',
-            f'"{query}" bankruptcy OR lien OR judgment filed',
-        ]
+
+        # Parse name and locations from input
+        if "|" in query:
+            parts = query.split("|", 1)
+            name = parts[0].strip()
+            locations = [l.strip() for l in parts[1].split(",") if l.strip()]
+        else:
+            name = query.strip()
+            locations = []
 
         all_results = []
-        labels = [
-            "PROFESSIONAL LICENSES & CERTIFICATIONS",
-            "POLITICAL DONATIONS (FEC)",
-            "DISCIPLINARY ACTIONS",
-            "BANKRUPTCY, LIENS & JUDGMENTS",
-        ]
 
-        for label, tq in zip(labels, targeted_queries):
+        # --- Professional licenses: search each jurisdiction ---
+        license_results = []
+        if locations:
+            for loc in locations:
+                try:
+                    r = search.run(f'"{name}" {loc} professional license OR licensed OR certification OR bar admission')
+                    if r and str(r).strip() != "[]":
+                        license_results.append(f"  [{loc}]: {r}")
+                except Exception as e:
+                    license_results.append(f"  [{loc}]: Search failed: {str(e)}")
+        else:
             try:
-                results = search.run(tq)
-                if results and str(results).strip() != "[]":
-                    all_results.append(f"\n### {label}\n{results}")
-                else:
-                    all_results.append(f"\n### {label}\nNo results found.")
+                r = search.run(f'"{name}" professional license OR licensed OR certification')
+                if r and str(r).strip() != "[]":
+                    license_results.append(f"  {r}")
             except Exception as e:
-                all_results.append(f"\n### {label}\nSearch failed: {str(e)}")
+                license_results.append(f"  Search failed: {str(e)}")
+
+        if license_results:
+            all_results.append(f"\n### PROFESSIONAL LICENSES & CERTIFICATIONS\n" + "\n".join(license_results))
+        else:
+            all_results.append(f"\n### PROFESSIONAL LICENSES & CERTIFICATIONS\nNo results found in any jurisdiction.")
+
+        # --- FEC donations (federal, no location needed) ---
+        try:
+            r = search.run(f'"{name}" FEC political donation OR campaign contribution')
+            if r and str(r).strip() != "[]":
+                all_results.append(f"\n### POLITICAL DONATIONS (FEC)\n{r}")
+            else:
+                all_results.append(f"\n### POLITICAL DONATIONS (FEC)\nNo results found.")
+        except Exception as e:
+            all_results.append(f"\n### POLITICAL DONATIONS (FEC)\nSearch failed: {str(e)}")
+
+        # --- Disciplinary actions: search each jurisdiction ---
+        disc_results = []
+        if locations:
+            for loc in locations:
+                try:
+                    r = search.run(f'"{name}" {loc} disciplinary action OR suspended OR revoked OR sanctioned')
+                    if r and str(r).strip() != "[]":
+                        disc_results.append(f"  [{loc}]: {r}")
+                except Exception as e:
+                    disc_results.append(f"  [{loc}]: Search failed: {str(e)}")
+        else:
+            try:
+                r = search.run(f'"{name}" disciplinary action OR suspended OR revoked OR sanctioned')
+                if r and str(r).strip() != "[]":
+                    disc_results.append(f"  {r}")
+            except Exception as e:
+                disc_results.append(f"  Search failed: {str(e)}")
+
+        if disc_results:
+            all_results.append(f"\n### DISCIPLINARY ACTIONS\n" + "\n".join(disc_results))
+        else:
+            all_results.append(f"\n### DISCIPLINARY ACTIONS\nNo results found in any jurisdiction.")
+
+        # --- Bankruptcy, liens, judgments: search each location ---
+        lien_results = []
+        search_locs = locations if locations else [""]
+        for loc in search_locs:
+            try:
+                loc_query = f" {loc}" if loc else ""
+                r = search.run(f'"{name}"{loc_query} bankruptcy OR lien OR judgment filed')
+                if r and str(r).strip() != "[]":
+                    label = f"  [{loc}]: " if loc else "  "
+                    lien_results.append(f"{label}{r}")
+            except Exception as e:
+                label = f"  [{loc}]: " if loc else "  "
+                lien_results.append(f"{label}Search failed: {str(e)}")
+
+        if lien_results:
+            all_results.append(f"\n### BANKRUPTCY, LIENS & JUDGMENTS\n" + "\n".join(lien_results))
+        else:
+            all_results.append(f"\n### BANKRUPTCY, LIENS & JUDGMENTS\nNo results found.")
 
         return "\n".join(all_results)
 
@@ -510,11 +574,54 @@ target_name = st.text_input(
 )
 
 with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_person else ""), expanded=is_person):
-    location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
-    industry = st.text_input(
-        "Profession or Industry" if is_person else "Industry or Specialty",
-        placeholder="e.g., Real Estate Attorney" if is_person else "e.g., Fintech",
-    )
+    if is_person:
+        st.caption(
+            "💡 **Tip:** People often live, work, and hold licenses in different states. "
+            "Fill in as many as you know — the AI will search all jurisdictions."
+        )
+        loc_col1, loc_col2, loc_col3 = st.columns(3)
+        with loc_col1:
+            residence_location = st.text_input(
+                "Residence Location",
+                placeholder="e.g., Westfield, NJ",
+                help="Where the person lives or has lived",
+            )
+        with loc_col2:
+            work_location = st.text_input(
+                "Work Location",
+                placeholder="e.g., New York, NY",
+                help="Where the person works or has offices",
+            )
+        with loc_col3:
+            license_location = st.text_input(
+                "License / Bar Jurisdiction",
+                placeholder="e.g., New Jersey, Pennsylvania",
+                help="State(s) where they hold professional licenses. Separate multiple with commas.",
+            )
+        # Combine all locations for backward compatibility
+        all_locations = [loc.strip() for loc in [residence_location, work_location, license_location] if loc.strip()]
+        # Also split comma-separated license jurisdictions
+        expanded_locations = []
+        for loc in all_locations:
+            expanded_locations.extend([l.strip() for l in loc.split(",") if l.strip()])
+        all_locations = list(dict.fromkeys(expanded_locations))  # dedupe, preserve order
+        location = ", ".join(all_locations) if all_locations else ""
+
+        industry = st.text_input(
+            "Profession or Industry",
+            placeholder="e.g., Real Estate Attorney",
+        )
+    else:
+        location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
+        all_locations = [location.strip()] if location.strip() else []
+        residence_location = ""
+        work_location = ""
+        license_location = ""
+        industry = st.text_input(
+            "Industry or Specialty",
+            placeholder="e.g., Fintech",
+        )
+
     extra_context = st.text_area(
         "Additional Context",
         placeholder=(
@@ -523,11 +630,6 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
             else "e.g., Subsidiary of XYZ Holdings"
         ),
     )
-    if is_person:
-        st.caption(
-            "💡 **Tip:** For individuals, providing location and profession dramatically "
-            "improves accuracy and reduces false positives."
-        )
 
 st.markdown("### 🗄️ Deep Dive Databases")
 st.caption("These use dedicated API integrations — not just web search — for authoritative results.")
@@ -568,7 +670,16 @@ if st.button("Start AI Investigation"):
         st.session_state.chat_messages = []
 
         search_context = target_name
-        if location:
+        if is_person and any([residence_location, work_location, license_location]):
+            loc_parts = []
+            if residence_location:
+                loc_parts.append(f"resides in {residence_location}")
+            if work_location:
+                loc_parts.append(f"works in {work_location}")
+            if license_location:
+                loc_parts.append(f"licensed/registered in {license_location}")
+            search_context += f" ({'; '.join(loc_parts)})"
+        elif location:
             search_context += f", located in {location}"
         if industry:
             search_context += f", specializing in {industry}"
@@ -683,6 +794,13 @@ if st.button("Start AI Investigation"):
             "NEVER copy-paste raw website text, navigation, or boilerplate. "
             "Only include substantive findings. Translate foreign findings to English."
         )
+        if is_person and all_locations:
+            t1_desc += (
+                f"\n\nMULTI-JURISDICTION NOTICE: This individual may be associated with "
+                f"multiple locations: {', '.join(all_locations)}. Search for the subject's "
+                f"presence, business activity, and public records in ALL of these locations, "
+                f"not just one. Note which location each finding relates to."
+            )
         if use_registry:
             t1_desc += (
                 "\n\nYou have the 'opencorporates_search' tool available. "
@@ -701,6 +819,13 @@ if st.button("Start AI Investigation"):
             "Only include case names, dates, outcomes, and legal red flags. "
             "Translate foreign legal documents to English."
         )
+        if is_person and all_locations:
+            t2_desc += (
+                f"\n\nMULTI-JURISDICTION NOTICE: This individual may have legal records in "
+                f"multiple locations: {', '.join(all_locations)}. Search court records and "
+                f"regulatory actions in ALL of these jurisdictions. Note which jurisdiction "
+                f"each finding comes from."
+            )
         if use_courts:
             t2_desc += (
                 "\n\nYou have the 'court_listener_search' tool available. "
@@ -742,6 +867,12 @@ if st.button("Start AI Investigation"):
         people_agent = None
         people_task = None
         if is_person and use_people_records:
+            # Build a location string for the people records tool
+            people_loc_str = ", ".join(all_locations) if all_locations else ""
+            people_tool_input = (
+                f"{target_name} | {people_loc_str}" if people_loc_str else target_name
+            )
+
             people_agent = Agent(
                 role="People Intelligence Analyst",
                 goal="Find professional licenses, political donations, disciplinary actions, and public records for {company_name}",
@@ -756,16 +887,38 @@ if st.button("Start AI Investigation"):
                 allow_delegation=False,
                 max_execution_time=300,
             )
+
+            people_search_instructions = (
+                f"Conduct a thorough individual background search for {{company_name}}.\n\n"
+                f"CRITICAL MULTI-JURISDICTION NOTICE:\n"
+                f"This individual may be associated with MULTIPLE locations:\n"
+            )
+            if residence_location:
+                people_search_instructions += f"- RESIDENCE: {residence_location}\n"
+            if work_location:
+                people_search_instructions += f"- WORK: {work_location}\n"
+            if license_location:
+                people_search_instructions += f"- LICENSE JURISDICTIONS: {license_location}\n"
+            people_search_instructions += (
+                f"\nYou MUST search ALL of these jurisdictions, not just one.\n\n"
+                f"Use the 'people_records_search' tool with this exact input:\n"
+                f"'{people_tool_input}'\n\n"
+                f"This will search professional licenses, FEC donations, disciplinary "
+                f"actions, and liens/judgments across ALL provided jurisdictions.\n\n"
+                f"Also use the search_tool to look for LinkedIn profile details, "
+                f"professional associations, board memberships, and news coverage. "
+                f"When searching, try each location separately if needed.\n\n"
+                f"SUMMARIZE all findings in your own words. Clearly indicate WHICH "
+                f"jurisdiction each finding comes from."
+            )
+
             people_task = Task(
-                description=(
-                    "Conduct a thorough individual background search for {company_name}. "
-                    "Use the 'people_records_search' tool to check professional licenses, "
-                    "FEC political donations, disciplinary actions, and liens/judgments. "
-                    "Also use the search_tool to look for LinkedIn profile details, "
-                    "professional associations, board memberships, and any news coverage. "
-                    "SUMMARIZE all findings in your own words."
+                description=people_search_instructions,
+                expected_output=(
+                    "A concise report on the individual's professional background, licenses "
+                    "(specifying which state/jurisdiction each is held in), donations, and "
+                    "any disciplinary or legal flags. Written STRICTLY in English."
                 ),
-                expected_output="A concise report on the individual's professional background, licenses, donations, and any disciplinary or legal flags. Written STRICTLY in English.",
                 agent=people_agent,
             )
 

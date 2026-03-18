@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import re
 import textwrap
@@ -840,6 +841,8 @@ if "comms_drafts" not in st.session_state:
     st.session_state.comms_drafts = None
 if "investigation_history" not in st.session_state:
     st.session_state.investigation_history = []
+if "scroll_to_report" not in st.session_state:
+    st.session_state.scroll_to_report = False
 
 # --- Sidebar ---
 with st.sidebar:
@@ -943,6 +946,21 @@ if history_count > 0:
 
 # --- New Investigation form ---
 
+# Clear form button
+if st.button("🧹 Clear All Fields & Start Fresh"):
+    st.session_state.report_result = None
+    st.session_state.report_target = None
+    st.session_state.report_sections = {}
+    st.session_state.chat_messages = []
+    st.session_state.comms_drafts = None
+    # Clear form field values
+    for key in ["target_name", "residence_location", "work_location", "license_location",
+                 "current_employer", "former_employers", "industry_person", "industry_company",
+                 "extra_context", "location"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
+
 # --- Target input ---
 target_type = st.radio(
     "What are you investigating?",
@@ -954,6 +972,7 @@ is_person = "Person" in target_type
 target_name = st.text_input(
     "Target Name *",
     placeholder="e.g., John Smith" if is_person else "e.g., Apple Inc.",
+    key="target_name",
 )
 
 # Initialize all person-specific variables with defaults
@@ -980,18 +999,21 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
                 "Residence Location",
                 placeholder="e.g., Westfield, NJ",
                 help="Where the person lives or has lived",
+                key="residence_location",
             )
         with loc_col2:
             work_location = st.text_input(
                 "Work Location",
                 placeholder="e.g., New York, NY",
                 help="Where the person works or has offices",
+                key="work_location",
             )
         with loc_col3:
             license_location = st.text_input(
                 "License / Bar Jurisdiction",
                 placeholder="e.g., New Jersey, Pennsylvania",
                 help="State(s) where they hold professional licenses. Separate multiple with commas.",
+                key="license_location",
             )
         all_locations = [loc.strip() for loc in [residence_location, work_location, license_location] if loc.strip()]
         expanded_locations = []
@@ -1003,6 +1025,7 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
         industry = st.text_input(
             "Profession or Industry",
             placeholder="e.g., Real Estate Attorney",
+            key="industry_person",
         )
 
         st.markdown("**Known Affiliations** (critical for finding the right person)")
@@ -1012,12 +1035,14 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
                 "Current Employer / Company",
                 placeholder="e.g., Manifest",
                 help="The person's current employer or company",
+                key="current_employer",
             )
         with aff_col2:
             former_employers = st.text_input(
                 "Former Employers (comma-separated)",
                 placeholder="e.g., EY Law, Microsoft",
                 help="Previous companies or firms. Separate multiple with commas.",
+                key="former_employers",
             )
         known_affiliations = []
         if current_employer.strip():
@@ -1025,11 +1050,12 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
         if former_employers.strip():
             known_affiliations.extend([e.strip() for e in former_employers.split(",") if e.strip()])
     else:
-        location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
+        location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY", key="location")
         all_locations = [location.strip()] if location.strip() else []
         industry = st.text_input(
             "Industry or Specialty",
             placeholder="e.g., Fintech",
+            key="industry_company",
         )
 
     extra_context = st.text_area(
@@ -1039,6 +1065,7 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
             if is_person
             else "e.g., Subsidiary of XYZ Holdings"
         ),
+        key="extra_context",
     )
 
 st.markdown("### 🗄️ Deep Dive Databases")
@@ -1556,6 +1583,7 @@ if st.button("Start AI Investigation"):
             "report": st.session_state.report_result,
             "comms": st.session_state.comms_drafts,
         })
+        st.session_state.scroll_to_report = True
         st.rerun()
 
 
@@ -1564,6 +1592,18 @@ if st.button("Start AI Investigation"):
 # ============================================================
 if st.session_state.report_result:
     st.markdown("---")
+    # Scroll anchor — auto-scrolls here when report loads
+    st.markdown('<div id="report-top"></div>', unsafe_allow_html=True)
+    if st.session_state.get("scroll_to_report"):
+        components.html(
+            """
+            <script>
+                window.parent.document.getElementById('report-top').scrollIntoView({behavior: 'smooth', block: 'start'});
+            </script>
+            """,
+            height=0,
+        )
+        st.session_state.scroll_to_report = False
     st.subheader("Final Intelligence Report")
     st.markdown(st.session_state.report_result)
 

@@ -629,6 +629,18 @@ target_name = st.text_input(
     placeholder="e.g., John Smith" if is_person else "e.g., Apple Inc.",
 )
 
+# --- Initialize all person-specific variables with defaults ---
+residence_location = ""
+work_location = ""
+license_location = ""
+current_employer = ""
+former_employers = ""
+known_affiliations = []
+all_locations = []
+location = ""
+industry = ""
+extra_context = ""
+
 with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_person else ""), expanded=is_person):
     if is_person:
         st.caption(

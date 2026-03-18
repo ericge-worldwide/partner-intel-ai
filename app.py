@@ -847,26 +847,31 @@ with st.sidebar:
     google_key = st.text_input("Gemini API Key", type="password")
     tavily_key = st.text_input("Tavily API Key", type="password")
 
-    # Investigation History
-    st.markdown("---")
-    st.header("📁 Investigation History")
-    if st.session_state.investigation_history:
+
+# --- Main content ---
+st.title("🕵️‍♂️ Business Partner Due Diligence")
+
+# --- Investigation History & Comparison (top of page) ---
+if st.session_state.investigation_history:
+    with st.expander(f"📁 Investigation History ({len(st.session_state.investigation_history)} reports)", expanded=False):
         for i, past in enumerate(reversed(st.session_state.investigation_history)):
-            col_hist, col_load = st.columns([3, 1])
-            with col_hist:
-                risk_preview = ""
-                score_m = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', past.get("report", ""), re.IGNORECASE)
-                if score_m:
-                    s = float(score_m.group(1))
-                    if s <= 3.0:
-                        risk_preview = f" 🟢 {s:.1f}"
-                    elif s <= 5.0:
-                        risk_preview = f" 🟡 {s:.1f}"
-                    elif s <= 7.0:
-                        risk_preview = f" 🟠 {s:.1f}"
-                    else:
-                        risk_preview = f" 🔴 {s:.1f}"
-                st.caption(f"**{past['target']}**{risk_preview}\n{past['date']}")
+            risk_preview = ""
+            score_m = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', past.get("report", ""), re.IGNORECASE)
+            if score_m:
+                s = float(score_m.group(1))
+                if s <= 3.0:
+                    risk_preview = "🟢"
+                elif s <= 5.0:
+                    risk_preview = "🟡"
+                elif s <= 7.0:
+                    risk_preview = "🟠"
+                else:
+                    risk_preview = "🔴"
+                risk_preview = f" {risk_preview} Risk: {s:.1f}/10"
+
+            col_info, col_load, col_dl = st.columns([4, 1, 1])
+            with col_info:
+                st.markdown(f"**{past['target']}**{risk_preview} — {past['date']}")
             with col_load:
                 if st.button("Load", key=f"load_{i}"):
                     st.session_state.report_result = past["report"]
@@ -875,87 +880,80 @@ with st.sidebar:
                     st.session_state.comms_drafts = past.get("comms")
                     st.session_state.chat_messages = []
                     st.rerun()
+            with col_dl:
+                pdf_bytes_hist = create_pdf(past["report"], past["target"])
+                st.download_button(
+                    "PDF",
+                    data=bytes(pdf_bytes_hist),
+                    file_name=f"Report_{sanitize_text(past['target']).replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    key=f"dl_{i}",
+                )
 
         st.markdown("---")
-        if st.button("🗑️ Clear History"):
+
+        # Comparison tool
+        if len(st.session_state.investigation_history) >= 2:
+            st.markdown("#### ⚖️ Compare Two Subjects")
+            compare_options = [f"{h['target']} ({h['date']})" for h in st.session_state.investigation_history]
+            comp_col1, comp_col2 = st.columns(2)
+            with comp_col1:
+                compare_a = st.selectbox("Subject A", compare_options, index=0)
+            with comp_col2:
+                compare_b = st.selectbox("Subject B", compare_options, index=min(1, len(compare_options) - 1))
+
+            if st.button("Run Comparison"):
+                def get_hist_entry(label):
+                    for h in st.session_state.investigation_history:
+                        if f"{h['target']} ({h['date']})" == label:
+                            return h
+                    return None
+
+                hist_a = get_hist_entry(compare_a)
+                hist_b = get_hist_entry(compare_b)
+
+                if hist_a and hist_b:
+                    def extract_scores(report):
+                        categories = [
+                            "Litigation History", "Financial Stability", "Regulatory Compliance",
+                            "Reputation", "Corporate Governance", "Transparency",
+                        ]
+                        scores = {}
+                        for cat in categories:
+                            m = re.search(rf'{cat}.*?Score[:\s]*(\d+\.?\d*)\s*/\s*10', report, re.IGNORECASE)
+                            scores[cat] = float(m.group(1)) if m else 0.0
+                        wm = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', report, re.IGNORECASE)
+                        scores["OVERALL"] = float(wm.group(1)) if wm else 0.0
+                        return scores
+
+                    scores_a = extract_scores(hist_a["report"])
+                    scores_b = extract_scores(hist_b["report"])
+
+                    ov1, ov2 = st.columns(2)
+                    with ov1:
+                        st.metric(hist_a["target"], f"{scores_a['OVERALL']:.1f} / 10")
+                    with ov2:
+                        st.metric(hist_b["target"], f"{scores_b['OVERALL']:.1f} / 10")
+
+                    for cat in ["Litigation History", "Financial Stability", "Regulatory Compliance",
+                                "Reputation", "Corporate Governance", "Transparency"]:
+                        c1, c2, c3 = st.columns([1, 2, 1])
+                        sa, sb = scores_a[cat], scores_b[cat]
+                        with c1:
+                            clr = "🟢" if sa <= 3 else ("🟡" if sa <= 5 else ("🟠" if sa <= 7 else "🔴"))
+                            st.markdown(f"{clr} **{sa:.1f}**")
+                        with c2:
+                            st.markdown(f"**{cat}**")
+                        with c3:
+                            clr = "🟢" if sb <= 3 else ("🟡" if sb <= 5 else ("🟠" if sb <= 7 else "🔴"))
+                            st.markdown(f"{clr} **{sb:.1f}**")
+
+        st.markdown("---")
+        if st.button("🗑️ Clear All History"):
             st.session_state.investigation_history = []
             st.rerun()
-    else:
-        st.caption("No past investigations yet.")
 
-    # Compare mode
-    if len(st.session_state.investigation_history) >= 2:
-        st.markdown("---")
-        st.header("⚖️ Compare Subjects")
-        compare_options = [f"{h['target']} ({h['date']})" for h in st.session_state.investigation_history]
-        compare_a = st.selectbox("Subject A", compare_options, index=0)
-        compare_b = st.selectbox("Subject B", compare_options, index=min(1, len(compare_options) - 1))
-        if st.button("Compare"):
-            st.session_state["compare_mode"] = True
-            st.session_state["compare_a"] = compare_a
-            st.session_state["compare_b"] = compare_b
-            st.rerun()
-
-
-# --- Main content ---
-st.title("🕵️‍♂️ Business Partner Due Diligence")
-
-# --- Comparison display ---
-if st.session_state.get("compare_mode"):
-    st.subheader("⚖️ Subject Comparison")
-
-    def get_hist(label):
-        for h in st.session_state.investigation_history:
-            if f"{h['target']} ({h['date']})" == label:
-                return h
-        return None
-
-    hist_a = get_hist(st.session_state["compare_a"])
-    hist_b = get_hist(st.session_state["compare_b"])
-
-    if hist_a and hist_b:
-        def extract_scores(report):
-            categories = [
-                "Litigation History", "Financial Stability", "Regulatory Compliance",
-                "Reputation", "Corporate Governance", "Transparency",
-            ]
-            scores = {}
-            for cat in categories:
-                m = re.search(rf'{cat}.*?Score[:\s]*(\d+\.?\d*)\s*/\s*10', report, re.IGNORECASE)
-                scores[cat] = float(m.group(1)) if m else 0.0
-            wm = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', report, re.IGNORECASE)
-            scores["OVERALL"] = float(wm.group(1)) if wm else 0.0
-            return scores
-
-        scores_a = extract_scores(hist_a["report"])
-        scores_b = extract_scores(hist_b["report"])
-
-        comp_col1, comp_col2, comp_col3 = st.columns([2, 1, 2])
-        with comp_col1:
-            st.markdown(f"### {hist_a['target']}")
-            st.metric("Overall Risk", f"{scores_a['OVERALL']:.1f} / 10")
-        with comp_col2:
-            st.markdown("### vs.")
-        with comp_col3:
-            st.markdown(f"### {hist_b['target']}")
-            st.metric("Overall Risk", f"{scores_b['OVERALL']:.1f} / 10")
-
-        st.markdown("#### Category Breakdown")
-        for cat in ["Litigation History", "Financial Stability", "Regulatory Compliance",
-                     "Reputation", "Corporate Governance", "Transparency"]:
-            c1, c2, c3 = st.columns([2, 3, 2])
-            with c1:
-                st.write(f"**{scores_a[cat]:.1f}**")
-            with c2:
-                st.write(f"**{cat}**")
-            with c3:
-                st.write(f"**{scores_b[cat]:.1f}**")
-
-    if st.button("← Back to Investigation"):
-        st.session_state["compare_mode"] = False
-        st.rerun()
-
-    st.stop()
+# --- New Investigation form ---
 
 # --- Target input ---
 target_type = st.radio(

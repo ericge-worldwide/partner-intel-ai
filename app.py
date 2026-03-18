@@ -1561,13 +1561,14 @@ if st.button("Start AI Investigation"):
             progress["comms"] = "error"
             progress_placeholder.markdown(render_progress(progress))
 
-        # Save to investigation history
+        # Save to investigation history and rerun so the history expander renders
         st.session_state.investigation_history.append({
             "target": target_name,
             "date": current_date_str,
             "report": st.session_state.report_result,
             "comms": st.session_state.comms_drafts,
         })
+        st.rerun()
 
 
 # ============================================================

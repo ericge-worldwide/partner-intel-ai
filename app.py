@@ -24,6 +24,65 @@ class CustomSearchTool(BaseTool):
         return search.run(query)
 
 
+class CleanScrapeWebsiteTool(BaseTool):
+    name: str = "scrape_website"
+    description: str = (
+        "Scrapes a website URL and returns only the meaningful content. "
+        "Strips out navigation, footers, forms, ads, and boilerplate. "
+        "Use this when you find a relevant URL and need to read its content."
+    )
+
+    def _run(self, website_url: str) -> str:
+        import re
+        scraper = ScrapeWebsiteTool()
+        try:
+            raw = scraper.run(website_url=website_url)
+        except Exception as e:
+            return f"[SCRAPE FAILED] Could not read {website_url}: {str(e)}"
+
+        if not raw or len(raw.strip()) < 50:
+            return "[SCRAPE FAILED] Page returned no usable content."
+
+        # --- Clean boilerplate patterns ---
+        noise_patterns = [
+            # Navigation / menu fragments
+            r'(?i)(home|about us|contact us|privacy policy|disclaimer|terms of service'
+            r'|cookie policy|sitemap|sign up|log in|subscribe|newsletter'
+            r'|follow us|share this|back to top|all rights reserved'
+            r'|copyright \d{4}|©)[^\n]{0,80}\n?',
+            # Phone/fax with surrounding boilerplate
+            r'(?i)(call|phone|fax|toll.free|consultation)\s*:?\s*[\d\-\(\)\+\. ]{7,20}',
+            # Repeated menu-like short lines (e.g., "Business Law\nCorporate Law\nLitigation\n")
+            r'(?m)(^.{2,40}\n){5,}',
+            # Form fields and labels
+            r'(?i)(name\s*\*|email\s*\*|phone\s*\*|message\s*|please prove you are human'
+            r'|request a consultation|areas of expertise:|i have read and agree)',
+            # SEO / marketing filler
+            r'(?i)(we look forward to|our team of experienced|are at your service'
+            r'|please provide us with|a lawyer will be in touch'
+            r'|website design|lawyer seo|hey ai learn about us)',
+        ]
+
+        cleaned = raw
+        for pattern in noise_patterns:
+            cleaned = re.sub(pattern, ' ', cleaned)
+
+        # Collapse excessive whitespace
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r' {2,}', ' ', cleaned)
+        cleaned = cleaned.strip()
+
+        # Truncate to a reasonable length (avoid dumping 50-page sites)
+        max_chars = 8000
+        if len(cleaned) > max_chars:
+            cleaned = cleaned[:max_chars] + "\n\n[TRUNCATED — content exceeded limit]"
+
+        if len(cleaned) < 50:
+            return "[SCRAPE FAILED] Page contained only boilerplate with no substantive content."
+
+        return cleaned
+
+
 # ============================================================
 # 2. STRUCTURED RISK RUBRIC
 # ============================================================
@@ -245,7 +304,7 @@ if st.button("Start AI Investigation"):
 
         gemini_model_string = "gemini/gemini-2.5-flash"
         search_tool = CustomSearchTool()
-        scrape_tool = ScrapeWebsiteTool()
+        scrape_tool = CleanScrapeWebsiteTool()
 
         current_date_str = datetime.now().strftime("%B %d, %Y")
         inputs = {"company_name": search_context, "current_date": current_date_str}
@@ -317,15 +376,27 @@ if st.button("Start AI Investigation"):
         # --- Build task descriptions (with optional deep-dive instructions) ---
         t1_desc = (
             "Gather background, location, and general news for {company_name}. "
-            "If you find a good link, scrape it. Translate foreign findings to English."
+            "If you find a relevant link, scrape it for details. "
+            "IMPORTANT: When reporting scraped content, SUMMARIZE the key facts in your own words. "
+            "NEVER copy-paste raw website text, navigation menus, contact forms, disclaimers, or boilerplate. "
+            "Only include substantive findings: names of key people, business activities, locations, "
+            "notable events, and any red flags. Translate foreign findings to English."
         )
         t2_desc = (
             "Search for litigation, patents, or regulatory fines involving {company_name}. "
-            "Scrape legal articles for details. Translate foreign legal documents to English."
+            "Scrape legal articles for details. "
+            "IMPORTANT: When reporting scraped content, SUMMARIZE the key legal facts in your own words. "
+            "NEVER copy-paste raw website text, navigation menus, or boilerplate. "
+            "Only include case names, dates, outcomes, regulatory actions, and legal red flags. "
+            "Translate foreign legal documents to English."
         )
         t3_desc = (
             "Search for recent revenue, funding, or financial instability regarding {company_name}. "
-            "Scrape relevant press releases. Translate foreign financial data to English."
+            "Scrape relevant press releases for details. "
+            "IMPORTANT: When reporting scraped content, SUMMARIZE the key financial facts in your own words. "
+            "NEVER copy-paste raw website text, navigation menus, or boilerplate. "
+            "Only include revenue figures, funding rounds, debt indicators, and financial red flags. "
+            "Translate foreign financial data to English."
         )
 
         if use_registry:
@@ -346,17 +417,17 @@ if st.button("Start AI Investigation"):
 
         t1 = Task(
             description=t1_desc,
-            expected_output="A detailed summary of the subject's background, written STRICTLY in English.",
+            expected_output="A concise, well-organized summary of the subject's background in your own words. No raw website text or boilerplate. Written STRICTLY in English.",
             agent=investigator,
         )
         t2 = Task(
             description=t2_desc,
-            expected_output="A report detailing legal red flags, written STRICTLY in English.",
+            expected_output="A concise report of legal red flags with case names, dates, and outcomes. No raw website text or boilerplate. Written STRICTLY in English.",
             agent=legal_auditor,
         )
         t3 = Task(
             description=t3_desc,
-            expected_output="A brief report on the subject's financial footprint, written STRICTLY in English.",
+            expected_output="A concise report on the subject's financial footprint with specific figures. No raw website text or boilerplate. Written STRICTLY in English.",
             agent=financial_analyst,
         )
 

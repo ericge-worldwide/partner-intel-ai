@@ -140,22 +140,35 @@ def create_pdf(report_text, target_name):
 # ============================================================
 # 4. PARALLEL AGENT RUNNER
 # ============================================================
-def run_agent_task(agent, task, inputs, results_dict, key, progress_dict):
-    """Runs a single CrewAI agent/task in a thread and stores the result."""
+def run_agent_task(agent, task, inputs, results_dict, key, progress_dict, start_delay=0):
+    """Runs a single CrewAI agent/task in a thread with retry logic."""
+    if start_delay > 0:
+        time.sleep(start_delay)
     progress_dict[key] = "running"
-    try:
-        mini_crew = Crew(
-            agents=[agent],
-            tasks=[task],
-            process=Process.sequential,
-            verbose=True,
-        )
-        result = mini_crew.kickoff(inputs=inputs)
-        results_dict[key] = str(result)
-        progress_dict[key] = "complete"
-    except Exception as e:
-        results_dict[key] = f"[AGENT ERROR] {key} failed: {str(e)}"
-        progress_dict[key] = "error"
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            mini_crew = Crew(
+                agents=[agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=True,
+            )
+            result = mini_crew.kickoff(inputs=inputs)
+            results_dict[key] = str(result)
+            progress_dict[key] = "complete"
+            return
+        except Exception as e:
+            err_str = str(e)
+            is_retryable = any(code in err_str for code in ["503", "429", "UNAVAILABLE", "rate", "quota", "overloaded"])
+            if is_retryable and attempt < max_retries:
+                wait_time = (attempt + 1) * 15  # 15s, 30s
+                progress_dict[key] = f"retry ({attempt + 1}/{max_retries})"
+                time.sleep(wait_time)
+            else:
+                results_dict[key] = f"[AGENT ERROR] {key} failed: {err_str}"
+                progress_dict[key] = "error"
+                return
 
 
 # ============================================================
@@ -225,9 +238,9 @@ if st.button("Start AI Investigation"):
         if extra_context:
             search_context += f". Additional details: {extra_context}"
 
-        # --- FIX: Set env vars for libraries that require them,
-        #     but also pass keys directly wherever possible. ---
+        # --- Set ALL env var names that litellm / CrewAI may look for ---
         os.environ["GEMINI_API_KEY"] = google_key
+        os.environ["GOOGLE_API_KEY"] = google_key
         os.environ["TAVILY_API_KEY"] = tavily_key
 
         gemini_model_string = "gemini/gemini-2.5-flash"
@@ -254,7 +267,8 @@ if st.button("Start AI Investigation"):
             md = "### 🕵️ Investigation Progress\n\n"
             for key, label in labels.items():
                 status = progress_dict.get(key, "pending")
-                md += f"{icons[status]}  **{label}** — {status.upper()}\n\n"
+                icon = icons.get(status, "🔁")  # 🔁 for retry states
+                md += f"{icon}  **{label}** — {status.upper()}\n\n"
             return md
 
         progress = {
@@ -346,20 +360,20 @@ if st.button("Start AI Investigation"):
             agent=financial_analyst,
         )
 
-        # --- Run T1, T2, T3 in parallel threads ---
+        # --- Run T1, T2, T3 in parallel threads (staggered to avoid rate limits) ---
         agent_results = {}
         threads = [
             threading.Thread(
                 target=run_agent_task,
-                args=(investigator, t1, inputs, agent_results, "osint", progress),
+                args=(investigator, t1, inputs, agent_results, "osint", progress, 0),
             ),
             threading.Thread(
                 target=run_agent_task,
-                args=(legal_auditor, t2, inputs, agent_results, "legal", progress),
+                args=(legal_auditor, t2, inputs, agent_results, "legal", progress, 5),
             ),
             threading.Thread(
                 target=run_agent_task,
-                args=(financial_analyst, t3, inputs, agent_results, "financial", progress),
+                args=(financial_analyst, t3, inputs, agent_results, "financial", progress, 10),
             ),
         ]
 
@@ -375,6 +389,11 @@ if st.button("Start AI Investigation"):
             t.join()
 
         progress_placeholder.markdown(render_progress(progress))
+
+        # Re-assert API keys after threads complete (thread safety)
+        os.environ["GEMINI_API_KEY"] = google_key
+        os.environ["GOOGLE_API_KEY"] = google_key
+        os.environ["TAVILY_API_KEY"] = tavily_key
 
         # -------------------------------------------------------
         # PHASE 1-B: Risk manager with structured rubric
@@ -463,7 +482,7 @@ if st.button("Start AI Investigation"):
         # -------------------------------------------------------
         # PHASE 1-C: Communications drafts
         # -------------------------------------------------------
-        if st.session_state.report_result and "[AGENT ERROR]" not in st.session_state.report_result:
+        if st.session_state.report_result:
             progress["comms"] = "running"
             progress_placeholder.markdown(render_progress(progress))
 
@@ -478,6 +497,8 @@ if st.button("Start AI Investigation"):
                     "key risks and findings. Include a Subject Line.\n"
                     "2. A short Slack message with emojis to alert the team that the "
                     "report is ready, highlighting the risk score.\n\n"
+                    "Note: Some sections may contain error messages where an agent failed. "
+                    "Acknowledge any gaps in coverage in your drafts.\n\n"
                     f"Report:\n{st.session_state.report_result}"
                 )
                 comms_response = chat_llm.invoke(comms_prompt)

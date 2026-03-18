@@ -390,6 +390,62 @@ class PeopleRecordsTool(BaseTool):
         return "\n".join(all_results)
 
 
+# --- Identity Resolution Tool ---
+class IdentityResolutionTool(BaseTool):
+    name: str = "identity_resolver"
+    description: str = (
+        "Establishes the correct identity of a person by cross-referencing their name "
+        "with known employers, affiliations, and locations. Run this FIRST before any "
+        "other searches to build a verified identity profile. "
+        "Input format: 'Name | affiliation1, affiliation2 | location1, location2'"
+    )
+
+    def _run(self, query: str) -> str:
+        search = TavilySearchResults(k=5)
+        parts = [p.strip() for p in query.split("|")]
+        name = parts[0] if len(parts) > 0 else query
+        affiliations = [a.strip() for a in parts[1].split(",") if a.strip()] if len(parts) > 1 else []
+        locations = [l.strip() for l in parts[2].split(",") if l.strip()] if len(parts) > 2 else []
+
+        results = [f"IDENTITY RESOLUTION for '{name}':\n"]
+
+        # Search name + each affiliation (most powerful disambiguator)
+        for aff in affiliations:
+            try:
+                r = search.run(f'"{name}" "{aff}"')
+                if r and str(r).strip() != "[]":
+                    results.append(f"\n[{name} + {aff}]:\n{r}")
+            except Exception as e:
+                results.append(f"\n[{name} + {aff}]: Search failed: {str(e)}")
+
+        # LinkedIn specific search (name + current employer is best)
+        if affiliations:
+            linkedin_query = f'"{name}" {affiliations[0]} LinkedIn'
+        else:
+            linkedin_query = f'"{name}" LinkedIn profile'
+        try:
+            r = search.run(linkedin_query)
+            if r and str(r).strip() != "[]":
+                results.append(f"\n[LinkedIn Search]:\n{r}")
+        except Exception as e:
+            results.append(f"\n[LinkedIn Search]: Failed: {str(e)}")
+
+        # Cross-reference with combined query
+        if affiliations and locations:
+            combined = f'"{name}" {" OR ".join(f""""{a}""" for a in affiliations[:3])} {locations[0]}'
+            try:
+                r = search.run(combined)
+                if r and str(r).strip() != "[]":
+                    results.append(f"\n[Combined Cross-Reference]:\n{r}")
+            except Exception as e:
+                results.append(f"\n[Combined]: Failed: {str(e)}")
+
+        if len(results) <= 1:
+            results.append("No identity-confirming results found. Proceed with caution — findings may relate to a different person with the same name.")
+
+        return "\n".join(results)
+
+
 # ============================================================
 # 2. STRUCTURED RISK RUBRIC
 # ============================================================
@@ -617,6 +673,9 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
         residence_location = ""
         work_location = ""
         license_location = ""
+        current_employer = ""
+        former_employers = ""
+        known_affiliations = []
         industry = st.text_input(
             "Industry or Specialty",
             placeholder="e.g., Fintech",
@@ -681,6 +740,11 @@ if st.button("Start AI Investigation"):
             search_context += f" ({'; '.join(loc_parts)})"
         elif location:
             search_context += f", located in {location}"
+        if is_person and known_affiliations:
+            if current_employer:
+                search_context += f", currently at {current_employer}"
+            if former_employers.strip():
+                search_context += f", formerly at {former_employers.strip()}"
         if industry:
             search_context += f", specializing in {industry}"
         if extra_context:
@@ -702,6 +766,9 @@ if st.button("Start AI Investigation"):
         osint_tools = [search_tool, scrape_tool]
         legal_tools = [search_tool, scrape_tool]
         financial_tools = [search_tool, scrape_tool]
+
+        if is_person and known_affiliations:
+            osint_tools.append(IdentityResolutionTool())
 
         if use_registry:
             osint_tools.append(OpenCorporatesTool())
@@ -794,6 +861,35 @@ if st.button("Start AI Investigation"):
             "NEVER copy-paste raw website text, navigation, or boilerplate. "
             "Only include substantive findings. Translate foreign findings to English."
         )
+        if is_person and known_affiliations:
+            aff_str = ", ".join(known_affiliations)
+            loc_str = ", ".join(all_locations) if all_locations else "unknown"
+            resolver_input = f"{target_name} | {aff_str} | {loc_str}"
+            t1_desc = (
+                f"STEP 1 — IDENTITY RESOLUTION (do this FIRST):\n"
+                f"You have the 'identity_resolver' tool. Use it immediately with this exact input:\n"
+                f"'{resolver_input}'\n"
+                f"This will cross-reference the name with known employers to find the RIGHT person.\n\n"
+                f"Known affiliations for this person:\n"
+            )
+            if current_employer:
+                t1_desc += f"- CURRENT: {current_employer}\n"
+            if former_employers.strip():
+                t1_desc += f"- FORMER: {former_employers.strip()}\n"
+            t1_desc += (
+                f"\nSTEP 2 — BACKGROUND INVESTIGATION:\n"
+                f"Using the identity established above, gather background, location, and "
+                f"general news for {{company_name}}.\n"
+                f"CRITICAL: When searching, ALWAYS combine the person's name with a known "
+                f"employer to disambiguate. For example, search for:\n"
+            )
+            for aff in known_affiliations[:3]:
+                t1_desc += f'- "{target_name}" "{aff}"\n'
+            t1_desc += (
+                f"\nNEVER search for just the bare name alone — this returns wrong people.\n"
+                f"If you find a relevant link, scrape it for details.\n"
+                f"SUMMARIZE all findings in your own words. No raw website content."
+            )
         if is_person and all_locations:
             t1_desc += (
                 f"\n\nMULTI-JURISDICTION NOTICE: This individual may be associated with "
@@ -819,6 +915,20 @@ if st.button("Start AI Investigation"):
             "Only include case names, dates, outcomes, and legal red flags. "
             "Translate foreign legal documents to English."
         )
+        if is_person and known_affiliations:
+            t2_desc += (
+                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. To avoid confusing "
+                f"this person with others who share the same name, ALWAYS combine the name "
+                f"with a known employer in your searches. Known affiliations:\n"
+            )
+            if current_employer:
+                t2_desc += f"- CURRENT: {current_employer}\n"
+            if former_employers.strip():
+                t2_desc += f"- FORMER: {former_employers.strip()}\n"
+            t2_desc += (
+                f"For example, search: \"{target_name}\" \"{known_affiliations[0]}\" lawsuit\n"
+                f"NEVER search for just the bare name plus legal terms — too many false positives."
+            )
         if is_person and all_locations:
             t2_desc += (
                 f"\n\nMULTI-JURISDICTION NOTICE: This individual may have legal records in "
@@ -839,6 +949,19 @@ if st.button("Start AI Investigation"):
             "Only include revenue figures, funding rounds, and financial red flags. "
             "Translate foreign financial data to English."
         )
+        if is_person and known_affiliations:
+            t3_desc += (
+                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. To find the RIGHT "
+                f"person's financial footprint, ALWAYS combine the name with known employers:\n"
+            )
+            if current_employer:
+                t3_desc += f"- CURRENT: {current_employer}\n"
+            if former_employers.strip():
+                t3_desc += f"- FORMER: {former_employers.strip()}\n"
+            t3_desc += (
+                f"Search for financial activity at each of these organizations tied to this person. "
+                f"NEVER search for just the bare name alone."
+            )
         if use_sec:
             t3_desc += (
                 "\n\nYou have the 'sec_edgar_search' tool available. "
@@ -890,7 +1013,15 @@ if st.button("Start AI Investigation"):
 
             people_search_instructions = (
                 f"Conduct a thorough individual background search for {{company_name}}.\n\n"
-                f"CRITICAL MULTI-JURISDICTION NOTICE:\n"
+                f"IDENTITY DISAMBIGUATION: This person has known affiliations that MUST be "
+                f"used to ensure you find the right individual:\n"
+            )
+            if current_employer:
+                people_search_instructions += f"- CURRENT EMPLOYER: {current_employer}\n"
+            if former_employers.strip():
+                people_search_instructions += f"- FORMER EMPLOYERS: {former_employers.strip()}\n"
+            people_search_instructions += (
+                f"\nCRITICAL MULTI-JURISDICTION NOTICE:\n"
                 f"This individual may be associated with MULTIPLE locations:\n"
             )
             if residence_location:
@@ -907,7 +1038,8 @@ if st.button("Start AI Investigation"):
                 f"actions, and liens/judgments across ALL provided jurisdictions.\n\n"
                 f"Also use the search_tool to look for LinkedIn profile details, "
                 f"professional associations, board memberships, and news coverage. "
-                f"When searching, try each location separately if needed.\n\n"
+                f"When using search_tool, ALWAYS include a known employer in the query "
+                f"to disambiguate, e.g.: \"{target_name}\" \"{known_affiliations[0] if known_affiliations else ''}\" LinkedIn\n\n"
                 f"SUMMARIZE all findings in your own words. Clearly indicate WHICH "
                 f"jurisdiction each finding comes from."
             )

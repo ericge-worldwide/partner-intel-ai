@@ -1,20 +1,24 @@
 import streamlit as st
 import os
+import re
 import textwrap
 import threading
 import time
+import requests
 from crewai import Agent, Task, Crew, Process
 from crewai.tools import BaseTool
 from crewai_tools import ScrapeWebsiteTool
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_google_genai import ChatGoogleGenerativeAI
 from fpdf import FPDF
-from datetime import datetime
+from datetime import datetime, timedelta
 from unidecode import unidecode
 
 # ============================================================
-# 1. CUSTOM TOOL WRAPPER
+# 1. TOOL DEFINITIONS
 # ============================================================
+
+# --- General Search ---
 class CustomSearchTool(BaseTool):
     name: str = "search_tool"
     description: str = "Searches the internet for information about a company or person."
@@ -24,6 +28,7 @@ class CustomSearchTool(BaseTool):
         return search.run(query)
 
 
+# --- Clean Scraper ---
 class CleanScrapeWebsiteTool(BaseTool):
     name: str = "scrape_website"
     description: str = (
@@ -33,7 +38,6 @@ class CleanScrapeWebsiteTool(BaseTool):
     )
 
     def _run(self, website_url: str) -> str:
-        import re
         scraper = ScrapeWebsiteTool()
         try:
             raw = scraper.run(website_url=website_url)
@@ -43,21 +47,15 @@ class CleanScrapeWebsiteTool(BaseTool):
         if not raw or len(raw.strip()) < 50:
             return "[SCRAPE FAILED] Page returned no usable content."
 
-        # --- Clean boilerplate patterns ---
         noise_patterns = [
-            # Navigation / menu fragments
             r'(?i)(home|about us|contact us|privacy policy|disclaimer|terms of service'
             r'|cookie policy|sitemap|sign up|log in|subscribe|newsletter'
             r'|follow us|share this|back to top|all rights reserved'
             r'|copyright \d{4}|©)[^\n]{0,80}\n?',
-            # Phone/fax with surrounding boilerplate
             r'(?i)(call|phone|fax|toll.free|consultation)\s*:?\s*[\d\-\(\)\+\. ]{7,20}',
-            # Repeated menu-like short lines (e.g., "Business Law\nCorporate Law\nLitigation\n")
             r'(?m)(^.{2,40}\n){5,}',
-            # Form fields and labels
             r'(?i)(name\s*\*|email\s*\*|phone\s*\*|message\s*|please prove you are human'
             r'|request a consultation|areas of expertise:|i have read and agree)',
-            # SEO / marketing filler
             r'(?i)(we look forward to|our team of experienced|are at your service'
             r'|please provide us with|a lawyer will be in touch'
             r'|website design|lawyer seo|hey ai learn about us)',
@@ -67,12 +65,10 @@ class CleanScrapeWebsiteTool(BaseTool):
         for pattern in noise_patterns:
             cleaned = re.sub(pattern, ' ', cleaned)
 
-        # Collapse excessive whitespace
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r' {2,}', ' ', cleaned)
         cleaned = cleaned.strip()
 
-        # Truncate to a reasonable length (avoid dumping 50-page sites)
         max_chars = 8000
         if len(cleaned) > max_chars:
             cleaned = cleaned[:max_chars] + "\n\n[TRUNCATED — content exceeded limit]"
@@ -83,12 +79,259 @@ class CleanScrapeWebsiteTool(BaseTool):
         return cleaned
 
 
+# --- SEC EDGAR Full-Text Search ---
+class SECEdgarTool(BaseTool):
+    name: str = "sec_edgar_search"
+    description: str = (
+        "Searches the SEC EDGAR database for official filings (10-K, 10-Q, 8-K, etc.) "
+        "for a given company. Returns filing titles, dates, and direct links. "
+        "Use this for public company financial disclosures and regulatory filings."
+    )
+
+    def _run(self, company_name: str) -> str:
+        try:
+            url = "https://efts.sec.gov/LATEST/search-index"
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=1095)).strftime("%Y-%m-%d")
+            params = {
+                "q": company_name,
+                "dateRange": "custom",
+                "startdt": start_date,
+                "enddt": end_date,
+                "forms": "10-K,10-Q,8-K,DEF 14A",
+            }
+            headers = {"User-Agent": "DueDiligenceBot/1.0 (research@example.com)"}
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+
+            if resp.status_code != 200:
+                return f"[SEC EDGAR] Search returned status {resp.status_code}. Trying fallback."
+
+            data = resp.json()
+            hits = data.get("hits", {}).get("hits", [])
+
+            if not hits:
+                return f"[SEC EDGAR] No filings found for '{company_name}' in the past 3 years."
+
+            results = [f"SEC EDGAR Results for '{company_name}' (last 3 years):\n"]
+            for hit in hits[:10]:
+                src = hit.get("_source", {})
+                form = src.get("form_type", "N/A")
+                filed = src.get("file_date", "N/A")
+                entity = src.get("entity_name", "N/A")
+                desc = src.get("display_names", [""])[0] if src.get("display_names") else ""
+                file_num = src.get("file_num", [""])[0] if src.get("file_num") else ""
+                results.append(
+                    f"- Form {form} | Filed: {filed} | Entity: {entity} | "
+                    f"File#: {file_num} | {desc}"
+                )
+
+            return "\n".join(results)
+
+        except requests.exceptions.Timeout:
+            return "[SEC EDGAR] Request timed out. SEC servers may be slow."
+        except Exception as e:
+            return f"[SEC EDGAR] Error: {str(e)}"
+
+
+# --- CourtListener Federal Court Search ---
+class CourtListenerTool(BaseTool):
+    name: str = "court_listener_search"
+    description: str = (
+        "Searches CourtListener's database of federal court opinions and dockets. "
+        "Returns case names, courts, dates, and summaries. "
+        "Use this to find lawsuits, judgments, and legal proceedings."
+    )
+
+    def _run(self, query: str) -> str:
+        try:
+            url = "https://www.courtlistener.com/api/rest/v3/search/"
+            params = {"q": query, "type": "o", "format": "json"}
+            headers = {"User-Agent": "DueDiligenceBot/1.0 (research@example.com)"}
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+
+            if resp.status_code == 429:
+                return "[COURTLISTENER] Rate limited. Try again in a moment."
+            if resp.status_code != 200:
+                return f"[COURTLISTENER] Search returned status {resp.status_code}."
+
+            data = resp.json()
+            results_list = data.get("results", [])
+
+            if not results_list:
+                return f"[COURTLISTENER] No federal court opinions found for '{query}'."
+
+            results = [f"CourtListener Results for '{query}':\n"]
+            for case in results_list[:8]:
+                name = case.get("caseName", "N/A")
+                court = case.get("court", "N/A")
+                date = case.get("dateFiled", "N/A")
+                status = case.get("status", "")
+                snippet = case.get("snippet", "")
+                # Clean HTML from snippet
+                snippet_clean = re.sub(r'<[^>]+>', '', snippet)[:200]
+                abs_url = case.get("absolute_url", "")
+                link = f"https://www.courtlistener.com{abs_url}" if abs_url else ""
+                results.append(
+                    f"- {name}\n  Court: {court} | Filed: {date} | Status: {status}\n"
+                    f"  Summary: {snippet_clean}\n  Link: {link}\n"
+                )
+
+            return "\n".join(results)
+
+        except requests.exceptions.Timeout:
+            return "[COURTLISTENER] Request timed out."
+        except Exception as e:
+            return f"[COURTLISTENER] Error: {str(e)}"
+
+
+# --- OpenCorporates Corporate Registry ---
+class OpenCorporatesTool(BaseTool):
+    name: str = "opencorporates_search"
+    description: str = (
+        "Searches the OpenCorporates global corporate registry for company details. "
+        "Returns official registration info: jurisdiction, status, incorporation date, "
+        "registered address, officers, and more."
+    )
+
+    def _run(self, company_name: str) -> str:
+        try:
+            url = "https://api.opencorporates.com/v0.4/companies/search"
+            params = {"q": company_name, "format": "json"}
+            resp = requests.get(url, params=params, timeout=15)
+
+            if resp.status_code == 429:
+                return "[OPENCORPORATES] Rate limited. Free tier may be exhausted."
+            if resp.status_code != 200:
+                return f"[OPENCORPORATES] Search returned status {resp.status_code}."
+
+            data = resp.json()
+            companies = data.get("results", {}).get("companies", [])
+
+            if not companies:
+                return f"[OPENCORPORATES] No registry records found for '{company_name}'."
+
+            results = [f"OpenCorporates Registry Results for '{company_name}':\n"]
+            for entry in companies[:5]:
+                co = entry.get("company", {})
+                name = co.get("name", "N/A")
+                jurisdiction = co.get("jurisdiction_code", "N/A")
+                status = co.get("current_status", "N/A")
+                inc_date = co.get("incorporation_date", "N/A")
+                co_type = co.get("company_type", "N/A")
+                addr = co.get("registered_address_in_full", "N/A")
+                oc_url = co.get("opencorporates_url", "")
+                results.append(
+                    f"- {name}\n  Jurisdiction: {jurisdiction} | Status: {status}\n"
+                    f"  Incorporated: {inc_date} | Type: {co_type}\n"
+                    f"  Address: {addr}\n  Link: {oc_url}\n"
+                )
+
+            return "\n".join(results)
+
+        except requests.exceptions.Timeout:
+            return "[OPENCORPORATES] Request timed out."
+        except Exception as e:
+            return f"[OPENCORPORATES] Error: {str(e)}"
+
+
+# --- OFAC Sanctions Search (via Treasury) ---
+class OFACSanctionsTool(BaseTool):
+    name: str = "ofac_sanctions_search"
+    description: str = (
+        "Searches the US Treasury OFAC Sanctions list (SDN and non-SDN) to check "
+        "if a person or company appears on any US sanctions or embargo lists. "
+        "This is critical for compliance screening."
+    )
+
+    def _run(self, name: str) -> str:
+        try:
+            url = "https://search.ofac.treas.gov/OpenData/JSON/SDN.json"
+            headers = {"User-Agent": "DueDiligenceBot/1.0 (research@example.com)"}
+            resp = requests.get(url, headers=headers, timeout=20)
+
+            if resp.status_code != 200:
+                # Fallback to web search
+                return (
+                    f"[OFAC] Could not access SDN list directly (status {resp.status_code}). "
+                    f"Use the search_tool to query: 'OFAC sanctions {name}' as a fallback."
+                )
+
+            sdn_data = resp.json()
+            name_lower = name.lower()
+            matches = []
+
+            for entry in sdn_data.get("sdnEntry", []):
+                entry_name = (entry.get("lastName", "") + " " + entry.get("firstName", "")).strip()
+                if not entry_name:
+                    entry_name = entry.get("lastName", "")
+
+                if name_lower in entry_name.lower():
+                    sdn_type = entry.get("sdnType", "N/A")
+                    programs = ", ".join(
+                        [p.get("program", "") for p in entry.get("programList", {}).get("program", [])]
+                    ) if entry.get("programList") else "N/A"
+                    remarks = entry.get("remarks", "N/A")
+                    matches.append(
+                        f"- {entry_name} | Type: {sdn_type} | Programs: {programs} | Remarks: {remarks}"
+                    )
+
+            if matches:
+                header = f"⚠️ OFAC SDN MATCHES FOUND for '{name}':\n"
+                return header + "\n".join(matches[:10])
+            else:
+                return f"[OFAC] No matches found for '{name}' on the SDN list. CLEAR."
+
+        except requests.exceptions.Timeout:
+            return "[OFAC] SDN list download timed out (file is large). Use search_tool for 'OFAC sanctions {name}' instead."
+        except Exception as e:
+            return f"[OFAC] Error: {str(e)}. Use search_tool for 'OFAC sanctions {name}' instead."
+
+
+# --- People-Specific Records Search ---
+class PeopleRecordsTool(BaseTool):
+    name: str = "people_records_search"
+    description: str = (
+        "Performs targeted searches for an individual across public records databases "
+        "including professional licenses, FEC political donations, and disciplinary actions. "
+        "Provide the person's full name and optionally their state/profession."
+    )
+
+    def _run(self, query: str) -> str:
+        search = TavilySearchResults(k=5)
+        targeted_queries = [
+            f'"{query}" professional license OR licensed OR certification',
+            f'"{query}" FEC political donation OR campaign contribution',
+            f'"{query}" disciplinary action OR suspended OR revoked OR sanctioned',
+            f'"{query}" bankruptcy OR lien OR judgment filed',
+        ]
+
+        all_results = []
+        labels = [
+            "PROFESSIONAL LICENSES & CERTIFICATIONS",
+            "POLITICAL DONATIONS (FEC)",
+            "DISCIPLINARY ACTIONS",
+            "BANKRUPTCY, LIENS & JUDGMENTS",
+        ]
+
+        for label, tq in zip(labels, targeted_queries):
+            try:
+                results = search.run(tq)
+                if results and str(results).strip() != "[]":
+                    all_results.append(f"\n### {label}\n{results}")
+                else:
+                    all_results.append(f"\n### {label}\nNo results found.")
+            except Exception as e:
+                all_results.append(f"\n### {label}\nSearch failed: {str(e)}")
+
+        return "\n".join(all_results)
+
+
 # ============================================================
 # 2. STRUCTURED RISK RUBRIC
 # ============================================================
 RISK_RUBRIC = """
-You MUST evaluate the subject using the structured rubric below. 
-For EACH category, assign a score from 1 (no concern) to 10 (critical risk) 
+You MUST evaluate the subject using the structured rubric below.
+For EACH category, assign a score from 1 (no concern) to 10 (critical risk)
 and provide a 1-2 sentence justification referencing specific findings.
 
 | Category               | Weight | What to Evaluate                                              |
@@ -132,14 +375,15 @@ Calculate as: (Litigation * 0.25) + (Financial * 0.20) + (Regulatory * 0.20) + (
 - 7.1 - 10.0: HIGH RISK — Recommend against engagement without mitigation
 
 ## EXECUTIVE SUMMARY
-[A concise 3-5 paragraph narrative synthesizing ALL findings from the OSINT, legal, 
-and financial investigations. Lead with the most critical findings. End with a 
+[A concise 3-5 paragraph narrative synthesizing ALL findings from the OSINT, legal,
+and financial investigations. Lead with the most critical findings. End with a
 clear recommendation.]
 
 ## KEY FINDINGS
-[Bullet list of the 3-5 most important individual facts uncovered, each prefixed 
+[Bullet list of the 3-5 most important individual facts uncovered, each prefixed
 with a 🔴 (critical), 🟡 (notable), or 🟢 (positive) indicator.]
 """
+
 
 # ============================================================
 # 3. PDF GENERATOR
@@ -179,7 +423,6 @@ def create_pdf(report_text, target_name):
         if line.strip() == "":
             pdf.ln(4)
             continue
-
         if line.startswith("##"):
             pdf.ln(2)
             pdf.set_font("Helvetica", "B", 12)
@@ -197,7 +440,7 @@ def create_pdf(report_text, target_name):
 
 
 # ============================================================
-# 4. PARALLEL AGENT RUNNER
+# 4. PARALLEL AGENT RUNNER WITH RETRY
 # ============================================================
 def run_agent_task(agent, task, inputs, results_dict, key, progress_dict, start_delay=0):
     """Runs a single CrewAI agent/task in a thread with retry logic."""
@@ -219,9 +462,11 @@ def run_agent_task(agent, task, inputs, results_dict, key, progress_dict, start_
             return
         except Exception as e:
             err_str = str(e)
-            is_retryable = any(code in err_str for code in ["503", "429", "UNAVAILABLE", "rate", "quota", "overloaded"])
+            is_retryable = any(
+                code in err_str for code in ["503", "429", "UNAVAILABLE", "rate", "quota", "overloaded"]
+            )
             if is_retryable and attempt < max_retries:
-                wait_time = (attempt + 1) * 15  # 15s, 30s
+                wait_time = (attempt + 1) * 15
                 progress_dict[key] = f"retry ({attempt + 1}/{max_retries})"
                 time.sleep(wait_time)
             else:
@@ -251,34 +496,67 @@ with st.sidebar:
 
 st.title("🕵️‍♂️ Business Partner Due Diligence")
 
+# --- Target type selector ---
+target_type = st.radio(
+    "What are you investigating?",
+    ["🏢 Company / Organization", "👤 Individual Person"],
+    horizontal=True,
+)
+is_person = "Person" in target_type
+
 target_name = st.text_input(
-    "Target Name (Company or Person) *",
-    placeholder="e.g., Apple Inc. or John Smith",
+    "Target Name *",
+    placeholder="e.g., John Smith" if is_person else "e.g., Apple Inc.",
 )
 
-with st.expander("⚙️ Optional Search Criteria (Recommended for People)"):
+with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_person else ""), expanded=is_person):
     location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
-    industry = st.text_input("Industry or Specialty", placeholder="e.g., Real Estate Attorney")
+    industry = st.text_input(
+        "Profession or Industry" if is_person else "Industry or Specialty",
+        placeholder="e.g., Real Estate Attorney" if is_person else "e.g., Fintech",
+    )
     extra_context = st.text_area(
         "Additional Context",
-        placeholder="e.g., Former partner at XYZ Law Firm",
+        placeholder=(
+            "e.g., Former partner at XYZ Law Firm, also known as J. Smith"
+            if is_person
+            else "e.g., Subsidiary of XYZ Holdings"
+        ),
     )
+    if is_person:
+        st.caption(
+            "💡 **Tip:** For individuals, providing location and profession dramatically "
+            "improves accuracy and reduces false positives."
+        )
 
-st.markdown("### 🗄️ Deep Dive Databases (Optional, takes longer)")
-col1, col2, col3 = st.columns(3)
+st.markdown("### 🗄️ Deep Dive Databases")
+st.caption("These use dedicated API integrations — not just web search — for authoritative results.")
+
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    use_sec = st.checkbox("🏛️ SEC Financials (10-K/10-Q)")
+    use_sec = st.checkbox("🏛️ SEC Filings", help="10-K, 10-Q, 8-K from EDGAR")
 with col2:
-    use_courts = st.checkbox("⚖️ Federal Court Dockets")
+    use_courts = st.checkbox("⚖️ Federal Courts", help="CourtListener opinions & dockets")
 with col3:
-    use_registry = st.checkbox("🏢 Corporate Registry")
+    use_registry = st.checkbox("🏢 Corporate Registry", help="OpenCorporates global registry")
+with col4:
+    use_ofac = st.checkbox("🚫 OFAC Sanctions", help="US Treasury SDN sanctions list")
 
-if use_sec or use_courts or use_registry:
+if is_person:
+    use_people_records = st.checkbox(
+        "🔍 People Records (Licenses, FEC Donations, Disciplinary Actions, Liens)",
+        value=True,
+        help="Targeted searches across professional license boards, FEC, and public record databases",
+    )
+else:
+    use_people_records = False
+
+deep_dive_active = use_sec or use_courts or use_registry or use_ofac or use_people_records
+if deep_dive_active:
     st.info(
-        "⏱️ **Extended Wait Time:** Deep dive databases require the AI to read "
-        "massive legal and financial documents and navigate government rate limits. "
-        "This investigation may take up to **5 minutes**. Please do not refresh "
-        "the page while the agents are working."
+        "⏱️ **Extended Wait Time:** Deep dive databases involve direct API calls to government "
+        "and legal databases, which may have rate limits. Investigation may take up to "
+        "**5 minutes**. Please do not refresh the page."
     )
 
 if st.button("Start AI Investigation"):
@@ -297,7 +575,6 @@ if st.button("Start AI Investigation"):
         if extra_context:
             search_context += f". Additional details: {extra_context}"
 
-        # --- Set ALL env var names that litellm / CrewAI may look for ---
         os.environ["GEMINI_API_KEY"] = google_key
         os.environ["GOOGLE_API_KEY"] = google_key
         os.environ["TAVILY_API_KEY"] = tavily_key
@@ -305,46 +582,63 @@ if st.button("Start AI Investigation"):
         gemini_model_string = "gemini/gemini-2.5-flash"
         search_tool = CustomSearchTool()
         scrape_tool = CleanScrapeWebsiteTool()
-
         current_date_str = datetime.now().strftime("%B %d, %Y")
         inputs = {"company_name": search_context, "current_date": current_date_str}
 
         # -------------------------------------------------------
-        # PHASE 1-A: Per-agent progress + parallel execution
+        # Build tool sets per agent based on user selections
+        # -------------------------------------------------------
+        osint_tools = [search_tool, scrape_tool]
+        legal_tools = [search_tool, scrape_tool]
+        financial_tools = [search_tool, scrape_tool]
+
+        if use_registry:
+            osint_tools.append(OpenCorporatesTool())
+        if use_ofac:
+            osint_tools.append(OFACSanctionsTool())
+        if use_courts:
+            legal_tools.append(CourtListenerTool())
+        if use_sec:
+            financial_tools.append(SECEdgarTool())
+
+        # -------------------------------------------------------
+        # Progress tracking
         # -------------------------------------------------------
         progress_placeholder = st.empty()
 
+        agent_labels = {
+            "osint": "OSINT Background",
+            "legal": "Legal & Compliance",
+            "financial": "Financial Analysis",
+        }
+        if is_person and use_people_records:
+            agent_labels["people"] = "People Records"
+        agent_labels["risk"] = "Risk Assessment"
+        agent_labels["comms"] = "Communications Drafts"
+
         def render_progress(progress_dict):
             icons = {"pending": "⏳", "running": "🔄", "complete": "✅", "error": "❌"}
-            labels = {
-                "osint": "OSINT Background",
-                "legal": "Legal & Compliance",
-                "financial": "Financial Analysis",
-                "risk": "Risk Assessment",
-                "comms": "Communications Drafts",
-            }
             md = "### 🕵️ Investigation Progress\n\n"
-            for key, label in labels.items():
+            for key, label in agent_labels.items():
                 status = progress_dict.get(key, "pending")
-                icon = icons.get(status, "🔁")  # 🔁 for retry states
+                icon = icons.get(status, "🔁")
                 md += f"{icon}  **{label}** — {status.upper()}\n\n"
             return md
 
-        progress = {
-            "osint": "pending",
-            "legal": "pending",
-            "financial": "pending",
-            "risk": "pending",
-            "comms": "pending",
-        }
+        progress = {k: "pending" for k in agent_labels}
         progress_placeholder.markdown(render_progress(progress))
 
-        # --- Build agents ---
+        # -------------------------------------------------------
+        # Build agents
+        # -------------------------------------------------------
         investigator = Agent(
             role="OSINT Lead",
             goal="Uncover public history and background for {company_name}",
-            backstory="Specialist in digital footprinting and open-source intelligence.",
-            tools=[search_tool, scrape_tool],
+            backstory=(
+                "Specialist in digital footprinting and open-source intelligence. "
+                "You always summarize findings in your own words — never paste raw website content."
+            ),
+            tools=osint_tools,
             llm=gemini_model_string,
             verbose=True,
             allow_delegation=False,
@@ -354,8 +648,11 @@ if st.button("Start AI Investigation"):
         legal_auditor = Agent(
             role="Legal Compliance Specialist",
             goal="Find lawsuits or regulatory issues for {company_name}",
-            backstory="Expert in court filings, regulatory compliance, and legal risk.",
-            tools=[search_tool, scrape_tool],
+            backstory=(
+                "Expert in court filings, regulatory compliance, and legal risk analysis. "
+                "You always summarize findings in your own words — never paste raw website content."
+            ),
+            tools=legal_tools,
             llm=gemini_model_string,
             verbose=True,
             allow_delegation=False,
@@ -365,73 +662,116 @@ if st.button("Start AI Investigation"):
         financial_analyst = Agent(
             role="Corporate Financial Analyst",
             goal="Find revenue figures, funding rounds, and financial health indicators for {company_name}",
-            backstory="Wall Street veteran who specializes in reading the financial health of entities.",
-            tools=[search_tool, scrape_tool],
+            backstory=(
+                "Wall Street veteran who reads the financial health of entities. "
+                "You always summarize findings in your own words — never paste raw website content."
+            ),
+            tools=financial_tools,
             llm=gemini_model_string,
             verbose=True,
             allow_delegation=False,
             max_execution_time=300,
         )
 
-        # --- Build task descriptions (with optional deep-dive instructions) ---
+        # -------------------------------------------------------
+        # Build task descriptions with conditional tool instructions
+        # -------------------------------------------------------
         t1_desc = (
             "Gather background, location, and general news for {company_name}. "
             "If you find a relevant link, scrape it for details. "
-            "IMPORTANT: When reporting scraped content, SUMMARIZE the key facts in your own words. "
-            "NEVER copy-paste raw website text, navigation menus, contact forms, disclaimers, or boilerplate. "
-            "Only include substantive findings: names of key people, business activities, locations, "
-            "notable events, and any red flags. Translate foreign findings to English."
+            "IMPORTANT: SUMMARIZE all findings in your own words. "
+            "NEVER copy-paste raw website text, navigation, or boilerplate. "
+            "Only include substantive findings. Translate foreign findings to English."
         )
+        if use_registry:
+            t1_desc += (
+                "\n\nYou have the 'opencorporates_search' tool available. "
+                "You MUST use it to look up official corporate registry details."
+            )
+        if use_ofac:
+            t1_desc += (
+                "\n\nYou have the 'ofac_sanctions_search' tool available. "
+                "You MUST use it to check if the subject appears on any US sanctions lists."
+            )
+
         t2_desc = (
             "Search for litigation, patents, or regulatory fines involving {company_name}. "
             "Scrape legal articles for details. "
-            "IMPORTANT: When reporting scraped content, SUMMARIZE the key legal facts in your own words. "
-            "NEVER copy-paste raw website text, navigation menus, or boilerplate. "
-            "Only include case names, dates, outcomes, regulatory actions, and legal red flags. "
+            "IMPORTANT: SUMMARIZE all findings in your own words. "
+            "Only include case names, dates, outcomes, and legal red flags. "
             "Translate foreign legal documents to English."
         )
-        t3_desc = (
-            "Search for recent revenue, funding, or financial instability regarding {company_name}. "
-            "Scrape relevant press releases for details. "
-            "IMPORTANT: When reporting scraped content, SUMMARIZE the key financial facts in your own words. "
-            "NEVER copy-paste raw website text, navigation menus, or boilerplate. "
-            "Only include revenue figures, funding rounds, debt indicators, and financial red flags. "
-            "Translate foreign financial data to English."
-        )
-
-        if use_registry:
-            t1_desc += (
-                " CRITICAL: You MUST also query 'site:opencorporates.com {company_name}' "
-                "to find and verify their official corporate registry details."
-            )
         if use_courts:
             t2_desc += (
-                " CRITICAL: You MUST also query 'site:courtlistener.com {company_name}' "
-                "to find specific federal court dockets and opinions."
+                "\n\nYou have the 'court_listener_search' tool available. "
+                "You MUST use it to search for federal court opinions and dockets."
             )
+
+        t3_desc = (
+            "Search for recent revenue, funding, or financial instability regarding {company_name}. "
+            "Scrape relevant press releases. "
+            "IMPORTANT: SUMMARIZE all findings in your own words. "
+            "Only include revenue figures, funding rounds, and financial red flags. "
+            "Translate foreign financial data to English."
+        )
         if use_sec:
             t3_desc += (
-                " CRITICAL: You MUST also query 'site:sec.gov {company_name} 10-K' "
-                "to find and summarize their official SEC filings."
+                "\n\nYou have the 'sec_edgar_search' tool available. "
+                "You MUST use it to find official SEC filings (10-K, 10-Q, 8-K)."
             )
 
         t1 = Task(
             description=t1_desc,
-            expected_output="A concise, well-organized summary of the subject's background in your own words. No raw website text or boilerplate. Written STRICTLY in English.",
+            expected_output="A concise, well-organized summary of the subject's background in your own words. No raw website text. Written STRICTLY in English.",
             agent=investigator,
         )
         t2 = Task(
             description=t2_desc,
-            expected_output="A concise report of legal red flags with case names, dates, and outcomes. No raw website text or boilerplate. Written STRICTLY in English.",
+            expected_output="A concise report of legal red flags with case names, dates, and outcomes. No raw website text. Written STRICTLY in English.",
             agent=legal_auditor,
         )
         t3 = Task(
             description=t3_desc,
-            expected_output="A concise report on the subject's financial footprint with specific figures. No raw website text or boilerplate. Written STRICTLY in English.",
+            expected_output="A concise report on the subject's financial footprint with specific figures. No raw website text. Written STRICTLY in English.",
             agent=financial_analyst,
         )
 
-        # --- Run T1, T2, T3 in parallel threads (staggered to avoid rate limits) ---
+        # -------------------------------------------------------
+        # People Records agent (conditional)
+        # -------------------------------------------------------
+        people_agent = None
+        people_task = None
+        if is_person and use_people_records:
+            people_agent = Agent(
+                role="People Intelligence Analyst",
+                goal="Find professional licenses, political donations, disciplinary actions, and public records for {company_name}",
+                backstory=(
+                    "Specialist in individual background checks using professional license "
+                    "databases, FEC records, and disciplinary boards. You always summarize "
+                    "findings in your own words."
+                ),
+                tools=[search_tool, PeopleRecordsTool()],
+                llm=gemini_model_string,
+                verbose=True,
+                allow_delegation=False,
+                max_execution_time=300,
+            )
+            people_task = Task(
+                description=(
+                    "Conduct a thorough individual background search for {company_name}. "
+                    "Use the 'people_records_search' tool to check professional licenses, "
+                    "FEC political donations, disciplinary actions, and liens/judgments. "
+                    "Also use the search_tool to look for LinkedIn profile details, "
+                    "professional associations, board memberships, and any news coverage. "
+                    "SUMMARIZE all findings in your own words."
+                ),
+                expected_output="A concise report on the individual's professional background, licenses, donations, and any disciplinary or legal flags. Written STRICTLY in English.",
+                agent=people_agent,
+            )
+
+        # -------------------------------------------------------
+        # Run research agents in parallel (staggered)
+        # -------------------------------------------------------
         agent_results = {}
         threads = [
             threading.Thread(
@@ -447,11 +787,17 @@ if st.button("Start AI Investigation"):
                 args=(financial_analyst, t3, inputs, agent_results, "financial", progress, 10),
             ),
         ]
+        if people_agent and people_task:
+            threads.append(
+                threading.Thread(
+                    target=run_agent_task,
+                    args=(people_agent, people_task, inputs, agent_results, "people", progress, 15),
+                )
+            )
 
         for t in threads:
             t.start()
 
-        # Poll for progress updates while threads are alive
         while any(t.is_alive() for t in threads):
             progress_placeholder.markdown(render_progress(progress))
             time.sleep(2)
@@ -461,13 +807,13 @@ if st.button("Start AI Investigation"):
 
         progress_placeholder.markdown(render_progress(progress))
 
-        # Re-assert API keys after threads complete (thread safety)
+        # Re-assert API keys after threads complete
         os.environ["GEMINI_API_KEY"] = google_key
         os.environ["GOOGLE_API_KEY"] = google_key
         os.environ["TAVILY_API_KEY"] = tavily_key
 
         # -------------------------------------------------------
-        # PHASE 1-B: Risk manager with structured rubric
+        # Risk manager with structured rubric
         # -------------------------------------------------------
         progress["risk"] = "running"
         progress_placeholder.markdown(render_progress(progress))
@@ -477,6 +823,10 @@ if st.button("Start AI Investigation"):
             f"## LEGAL & COMPLIANCE REPORT\n{agent_results.get('legal', 'No data.')}\n\n"
             f"## FINANCIAL ANALYSIS REPORT\n{agent_results.get('financial', 'No data.')}"
         )
+        if is_person and use_people_records:
+            combined_intel += (
+                f"\n\n## PEOPLE RECORDS & BACKGROUND\n{agent_results.get('people', 'No data.')}"
+            )
 
         risk_manager = Agent(
             role="Senior Risk Analyst",
@@ -517,7 +867,6 @@ if st.button("Start AI Investigation"):
             )
             risk_result = risk_crew.kickoff(inputs=inputs)
 
-            # Assemble the full report: individual findings + risk assessment
             full_report = (
                 f"# Due Diligence Report: {target_name}\n"
                 f"**Date:** {current_date_str}\n\n"
@@ -529,6 +878,10 @@ if st.button("Start AI Investigation"):
                 f"## Legal & Compliance\n{agent_results.get('legal', 'No data.')}\n\n"
                 f"## Financial Analysis\n{agent_results.get('financial', 'No data.')}"
             )
+            if is_person and use_people_records:
+                full_report += (
+                    f"\n\n## People Records & Background\n{agent_results.get('people', 'No data.')}"
+                )
 
             st.session_state.report_result = full_report
             st.session_state.report_target = target_name
@@ -539,7 +892,6 @@ if st.button("Start AI Investigation"):
             progress["risk"] = "error"
             progress_placeholder.markdown(render_progress(progress))
             st.error(f"🚨 **Risk assessment failed:** {str(e)}")
-            # Still save partial results so the user gets something
             st.session_state.report_result = (
                 f"# Partial Report: {target_name}\n"
                 f"**Date:** {current_date_str}\n\n"
@@ -548,10 +900,14 @@ if st.button("Start AI Investigation"):
                 f"## Legal & Compliance\n{agent_results.get('legal', 'No data.')}\n\n"
                 f"## Financial Analysis\n{agent_results.get('financial', 'No data.')}"
             )
+            if is_person and use_people_records:
+                st.session_state.report_result += (
+                    f"\n\n## People Records\n{agent_results.get('people', 'No data.')}"
+                )
             st.session_state.report_target = target_name
 
         # -------------------------------------------------------
-        # PHASE 1-C: Communications drafts
+        # Communications drafts
         # -------------------------------------------------------
         if st.session_state.report_result:
             progress["comms"] = "running"
@@ -607,7 +963,6 @@ if st.session_state.report_result:
         with st.expander("📬 Quick Share: Auto-Generated Email & Slack Drafts", expanded=True):
             st.markdown(st.session_state.comms_drafts)
 
-    # --- CHATBOT ---
     st.markdown("---")
     st.subheader("💬 Ask the Report")
     st.caption("Ask specific questions about the data uncovered above.")
@@ -623,7 +978,6 @@ if st.session_state.report_result:
             st.chat_message("user").markdown(user_question)
             st.session_state.chat_messages.append({"role": "user", "content": user_question})
 
-            # Keep only the last 10 messages to avoid token overflow
             recent_history = st.session_state.chat_messages[-10:]
             chat_history_text = "\n".join(
                 [f"{m['role'].capitalize()}: {m['content']}" for m in recent_history[:-1]]

@@ -18,7 +18,6 @@ from unidecode import unidecode
 # 1. TOOL DEFINITIONS
 # ============================================================
 
-# --- General Search ---
 class CustomSearchTool(BaseTool):
     name: str = "search_tool"
     description: str = "Searches the internet for information about a company or person."
@@ -28,7 +27,6 @@ class CustomSearchTool(BaseTool):
         return search.run(query)
 
 
-# --- Clean Scraper ---
 class CleanScrapeWebsiteTool(BaseTool):
     name: str = "scrape_website"
     description: str = (
@@ -79,13 +77,11 @@ class CleanScrapeWebsiteTool(BaseTool):
         return cleaned
 
 
-# --- SEC EDGAR Full-Text Search ---
 class SECEdgarTool(BaseTool):
     name: str = "sec_edgar_search"
     description: str = (
         "Searches the SEC EDGAR database for official filings (10-K, 10-Q, 8-K, etc.) "
-        "for a given company. Returns filing titles, dates, and direct links. "
-        "Use this for public company financial disclosures and regulatory filings."
+        "for a given company. Returns filing titles, dates, and direct links."
     )
 
     def _run(self, company_name: str) -> str:
@@ -124,7 +120,6 @@ class SECEdgarTool(BaseTool):
                     f"- Form {form} | Filed: {filed} | Entity: {entity} | "
                     f"File#: {file_num} | {desc}"
                 )
-
             return "\n".join(results)
 
         except requests.exceptions.Timeout:
@@ -133,13 +128,11 @@ class SECEdgarTool(BaseTool):
             return f"[SEC EDGAR] Error: {str(e)}"
 
 
-# --- CourtListener Federal Court Search ---
 class CourtListenerTool(BaseTool):
     name: str = "court_listener_search"
     description: str = (
         "Searches CourtListener's database of federal court opinions and dockets. "
-        "Returns case names, courts, dates, and summaries. "
-        "Use this to find lawsuits, judgments, and legal proceedings."
+        "Returns case names, courts, dates, and summaries."
     )
 
     def _run(self, query: str) -> str:
@@ -167,7 +160,6 @@ class CourtListenerTool(BaseTool):
                 date = case.get("dateFiled", "N/A")
                 status = case.get("status", "")
                 snippet = case.get("snippet", "")
-                # Clean HTML from snippet
                 snippet_clean = re.sub(r'<[^>]+>', '', snippet)[:200]
                 abs_url = case.get("absolute_url", "")
                 link = f"https://www.courtlistener.com{abs_url}" if abs_url else ""
@@ -175,7 +167,6 @@ class CourtListenerTool(BaseTool):
                     f"- {name}\n  Court: {court} | Filed: {date} | Status: {status}\n"
                     f"  Summary: {snippet_clean}\n  Link: {link}\n"
                 )
-
             return "\n".join(results)
 
         except requests.exceptions.Timeout:
@@ -184,13 +175,11 @@ class CourtListenerTool(BaseTool):
             return f"[COURTLISTENER] Error: {str(e)}"
 
 
-# --- OpenCorporates Corporate Registry ---
 class OpenCorporatesTool(BaseTool):
     name: str = "opencorporates_search"
     description: str = (
         "Searches the OpenCorporates global corporate registry for company details. "
-        "Returns official registration info: jurisdiction, status, incorporation date, "
-        "registered address, officers, and more."
+        "Returns official registration info: jurisdiction, status, incorporation date."
     )
 
     def _run(self, company_name: str) -> str:
@@ -225,7 +214,6 @@ class OpenCorporatesTool(BaseTool):
                     f"  Incorporated: {inc_date} | Type: {co_type}\n"
                     f"  Address: {addr}\n  Link: {oc_url}\n"
                 )
-
             return "\n".join(results)
 
         except requests.exceptions.Timeout:
@@ -234,13 +222,11 @@ class OpenCorporatesTool(BaseTool):
             return f"[OPENCORPORATES] Error: {str(e)}"
 
 
-# --- OFAC Sanctions Search (via Treasury) ---
 class OFACSanctionsTool(BaseTool):
     name: str = "ofac_sanctions_search"
     description: str = (
-        "Searches the US Treasury OFAC Sanctions list (SDN and non-SDN) to check "
-        "if a person or company appears on any US sanctions or embargo lists. "
-        "This is critical for compliance screening."
+        "Searches the US Treasury OFAC Sanctions list (SDN) to check "
+        "if a person or company appears on any US sanctions lists."
     )
 
     def _run(self, name: str) -> str:
@@ -250,7 +236,6 @@ class OFACSanctionsTool(BaseTool):
             resp = requests.get(url, headers=headers, timeout=20)
 
             if resp.status_code != 200:
-                # Fallback to web search
                 return (
                     f"[OFAC] Could not access SDN list directly (status {resp.status_code}). "
                     f"Use the search_tool to query: 'OFAC sanctions {name}' as a fallback."
@@ -264,7 +249,6 @@ class OFACSanctionsTool(BaseTool):
                 entry_name = (entry.get("lastName", "") + " " + entry.get("firstName", "")).strip()
                 if not entry_name:
                     entry_name = entry.get("lastName", "")
-
                 if name_lower in entry_name.lower():
                     sdn_type = entry.get("sdnType", "N/A")
                     programs = ", ".join(
@@ -276,32 +260,26 @@ class OFACSanctionsTool(BaseTool):
                     )
 
             if matches:
-                header = f"⚠️ OFAC SDN MATCHES FOUND for '{name}':\n"
-                return header + "\n".join(matches[:10])
+                return f"⚠️ OFAC SDN MATCHES FOUND for '{name}':\n" + "\n".join(matches[:10])
             else:
                 return f"[OFAC] No matches found for '{name}' on the SDN list. CLEAR."
 
         except requests.exceptions.Timeout:
-            return "[OFAC] SDN list download timed out (file is large). Use search_tool for 'OFAC sanctions {name}' instead."
+            return f"[OFAC] SDN list download timed out. Use search_tool for 'OFAC sanctions {name}' instead."
         except Exception as e:
             return f"[OFAC] Error: {str(e)}. Use search_tool for 'OFAC sanctions {name}' instead."
 
 
-# --- People-Specific Records Search ---
 class PeopleRecordsTool(BaseTool):
     name: str = "people_records_search"
     description: str = (
-        "Performs targeted searches for an individual across public records databases "
-        "including professional licenses, FEC political donations, and disciplinary actions. "
-        "Input should be formatted as: 'Name | Location1, Location2' "
-        "where locations are all known jurisdictions (residence, work, license states). "
-        "If no locations are known, just provide the name."
+        "Performs targeted searches for an individual across public records databases. "
+        "Input format: 'Name | Location1, Location2' where locations are all known jurisdictions."
     )
 
     def _run(self, query: str) -> str:
         search = TavilySearchResults(k=5)
 
-        # Parse name and locations from input
         if "|" in query:
             parts = query.split("|", 1)
             name = parts[0].strip()
@@ -312,7 +290,7 @@ class PeopleRecordsTool(BaseTool):
 
         all_results = []
 
-        # --- Professional licenses: search each jurisdiction ---
+        # Professional licenses per jurisdiction
         license_results = []
         if locations:
             for loc in locations:
@@ -330,12 +308,12 @@ class PeopleRecordsTool(BaseTool):
             except Exception as e:
                 license_results.append(f"  Search failed: {str(e)}")
 
-        if license_results:
-            all_results.append(f"\n### PROFESSIONAL LICENSES & CERTIFICATIONS\n" + "\n".join(license_results))
-        else:
-            all_results.append(f"\n### PROFESSIONAL LICENSES & CERTIFICATIONS\nNo results found in any jurisdiction.")
+        all_results.append(
+            f"\n### PROFESSIONAL LICENSES & CERTIFICATIONS\n"
+            + ("\n".join(license_results) if license_results else "No results found in any jurisdiction.")
+        )
 
-        # --- FEC donations (federal, no location needed) ---
+        # FEC donations (federal)
         try:
             r = search.run(f'"{name}" FEC political donation OR campaign contribution')
             if r and str(r).strip() != "[]":
@@ -345,7 +323,7 @@ class PeopleRecordsTool(BaseTool):
         except Exception as e:
             all_results.append(f"\n### POLITICAL DONATIONS (FEC)\nSearch failed: {str(e)}")
 
-        # --- Disciplinary actions: search each jurisdiction ---
+        # Disciplinary actions per jurisdiction
         disc_results = []
         if locations:
             for loc in locations:
@@ -363,12 +341,12 @@ class PeopleRecordsTool(BaseTool):
             except Exception as e:
                 disc_results.append(f"  Search failed: {str(e)}")
 
-        if disc_results:
-            all_results.append(f"\n### DISCIPLINARY ACTIONS\n" + "\n".join(disc_results))
-        else:
-            all_results.append(f"\n### DISCIPLINARY ACTIONS\nNo results found in any jurisdiction.")
+        all_results.append(
+            f"\n### DISCIPLINARY ACTIONS\n"
+            + ("\n".join(disc_results) if disc_results else "No results found in any jurisdiction.")
+        )
 
-        # --- Bankruptcy, liens, judgments: search each location ---
+        # Bankruptcy, liens, judgments
         lien_results = []
         search_locs = locations if locations else [""]
         for loc in search_locs:
@@ -382,21 +360,19 @@ class PeopleRecordsTool(BaseTool):
                 label = f"  [{loc}]: " if loc else "  "
                 lien_results.append(f"{label}Search failed: {str(e)}")
 
-        if lien_results:
-            all_results.append(f"\n### BANKRUPTCY, LIENS & JUDGMENTS\n" + "\n".join(lien_results))
-        else:
-            all_results.append(f"\n### BANKRUPTCY, LIENS & JUDGMENTS\nNo results found.")
+        all_results.append(
+            f"\n### BANKRUPTCY, LIENS & JUDGMENTS\n"
+            + ("\n".join(lien_results) if lien_results else "No results found.")
+        )
 
         return "\n".join(all_results)
 
 
-# --- Identity Resolution Tool ---
 class IdentityResolutionTool(BaseTool):
     name: str = "identity_resolver"
     description: str = (
         "Establishes the correct identity of a person by cross-referencing their name "
-        "with known employers, affiliations, and locations. Run this FIRST before any "
-        "other searches to build a verified identity profile. "
+        "with known employers, affiliations, and locations. Run this FIRST. "
         "Input format: 'Name | affiliation1, affiliation2 | location1, location2'"
     )
 
@@ -409,7 +385,6 @@ class IdentityResolutionTool(BaseTool):
 
         results = [f"IDENTITY RESOLUTION for '{name}':\n"]
 
-        # Search name + each affiliation (most powerful disambiguator)
         for aff in affiliations:
             try:
                 r = search.run(f'"{name}" "{aff}"')
@@ -418,7 +393,6 @@ class IdentityResolutionTool(BaseTool):
             except Exception as e:
                 results.append(f"\n[{name} + {aff}]: Search failed: {str(e)}")
 
-        # LinkedIn specific search (name + current employer is best)
         if affiliations:
             linkedin_query = f'"{name}" {affiliations[0]} LinkedIn'
         else:
@@ -430,7 +404,6 @@ class IdentityResolutionTool(BaseTool):
         except Exception as e:
             results.append(f"\n[LinkedIn Search]: Failed: {str(e)}")
 
-        # Cross-reference with combined query
         if affiliations and locations:
             combined = f'"{name}" {" OR ".join(f""""{a}""" for a in affiliations[:3])} {locations[0]}'
             try:
@@ -441,7 +414,10 @@ class IdentityResolutionTool(BaseTool):
                 results.append(f"\n[Combined]: Failed: {str(e)}")
 
         if len(results) <= 1:
-            results.append("No identity-confirming results found. Proceed with caution — findings may relate to a different person with the same name.")
+            results.append(
+                "No identity-confirming results found. Proceed with caution — "
+                "findings may relate to a different person with the same name."
+            )
 
         return "\n".join(results)
 
@@ -495,29 +471,117 @@ Calculate as: (Litigation * 0.25) + (Financial * 0.20) + (Regulatory * 0.20) + (
 - 7.1 - 10.0: HIGH RISK — Recommend against engagement without mitigation
 
 ## EXECUTIVE SUMMARY
-[A concise 3-5 paragraph narrative synthesizing ALL findings from the OSINT, legal,
-and financial investigations. Lead with the most critical findings. End with a
-clear recommendation.]
+[A concise 3-5 paragraph narrative synthesizing ALL findings. Lead with the most
+critical findings. End with a clear recommendation.]
 
 ## KEY FINDINGS
-[Bullet list of the 3-5 most important individual facts uncovered, each prefixed
+[Bullet list of the 3-5 most important facts uncovered, each prefixed
 with a 🔴 (critical), 🟡 (notable), or 🟢 (positive) indicator.]
 """
 
 
 # ============================================================
-# 3. PDF GENERATOR
+# 3. ENHANCED PDF GENERATOR
 # ============================================================
 class IntelligenceReport(FPDF):
     def header(self):
-        self.set_font("Helvetica", "B", 12)
-        self.cell(0, 10, "CONFIDENTIAL: PARTNER DUE DILIGENCE", border=False, ln=True, align="C")
-        self.ln(5)
+        # Dark header bar
+        self.set_fill_color(30, 40, 60)
+        self.rect(0, 0, 210, 18, 'F')
+        self.set_font("Helvetica", "B", 11)
+        self.set_text_color(255, 255, 255)
+        self.set_y(4)
+        self.cell(0, 10, "CONFIDENTIAL: PARTNER DUE DILIGENCE REPORT", align="C")
+        self.set_text_color(0, 0, 0)
+        self.ln(14)
 
     def footer(self):
         self.set_y(-15)
         self.set_font("Helvetica", "I", 8)
-        self.cell(0, 10, f"Generated {datetime.now().strftime('%Y-%m-%d')} | Page {self.page_no()}", align="C")
+        self.set_text_color(120, 120, 120)
+        self.cell(0, 10, f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} | Page {self.page_no()}/{{nb}}", align="C")
+        self.set_text_color(0, 0, 0)
+
+    def section_header(self, text):
+        """Render a styled section header with a colored underline."""
+        self.ln(4)
+        self.set_font("Helvetica", "B", 13)
+        self.set_text_color(30, 40, 60)
+        safe = sanitize_text(text.replace("#", "").strip())
+        self.cell(0, 8, safe, ln=True)
+        # Underline
+        self.set_draw_color(50, 100, 180)
+        self.set_line_width(0.5)
+        self.line(10, self.get_y(), 200, self.get_y())
+        self.set_draw_color(0, 0, 0)
+        self.set_line_width(0.2)
+        self.ln(3)
+        self.set_text_color(0, 0, 0)
+
+    def subsection_header(self, text):
+        """Render a subsection header."""
+        self.ln(2)
+        self.set_font("Helvetica", "B", 11)
+        self.set_text_color(50, 70, 100)
+        safe = sanitize_text(text.replace("#", "").strip())
+        self.cell(0, 7, safe, ln=True)
+        self.set_text_color(0, 0, 0)
+        self.ln(1)
+
+    def risk_badge(self, score_text, tier_text):
+        """Render a colored risk score badge."""
+        try:
+            score = float(re.search(r'(\d+\.?\d*)', score_text).group(1))
+        except (AttributeError, ValueError):
+            score = 5.0
+
+        if score <= 3.0:
+            r, g, b = 40, 160, 70   # green
+        elif score <= 5.0:
+            r, g, b = 220, 180, 30  # yellow
+        elif score <= 7.0:
+            r, g, b = 230, 130, 30  # orange
+        else:
+            r, g, b = 200, 50, 50   # red
+
+        self.ln(4)
+        self.set_fill_color(r, g, b)
+        self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 14)
+        badge_text = sanitize_text(f"  RISK SCORE: {score:.1f} / 10  ")
+        self.cell(self.get_string_width(badge_text) + 10, 12, badge_text, fill=True, ln=True)
+        self.ln(2)
+        self.set_font("Helvetica", "B", 11)
+        self.set_text_color(r, g, b)
+        self.cell(0, 7, sanitize_text(tier_text), ln=True)
+        self.set_text_color(0, 0, 0)
+        self.ln(3)
+
+    def bullet_item(self, text):
+        """Render a bullet point with proper wrapping."""
+        self.set_font("Helvetica", size=10)
+        safe = sanitize_text(text.strip().lstrip("-•* "))
+        # Indicator colors
+        if safe.startswith("🔴") or safe.startswith("[RED]"):
+            self.set_text_color(200, 50, 50)
+            prefix = ">> "
+            safe = safe.replace("🔴", "").replace("[RED]", "").strip()
+        elif safe.startswith("🟡") or safe.startswith("[YEL]"):
+            self.set_text_color(180, 140, 20)
+            prefix = ">> "
+            safe = safe.replace("🟡", "").replace("[YEL]", "").strip()
+        elif safe.startswith("🟢") or safe.startswith("[GRN]"):
+            self.set_text_color(40, 140, 60)
+            prefix = ">> "
+            safe = safe.replace("🟢", "").replace("[GRN]", "").strip()
+        else:
+            self.set_text_color(0, 0, 0)
+            prefix = "- "
+
+        wrapped = textwrap.fill(f"{prefix}{safe}", width=82, subsequent_indent="    ", break_long_words=True)
+        self.multi_cell(0, 6, wrapped)
+        self.ln(1)
+        self.set_text_color(0, 0, 0)
 
 
 def sanitize_text(text):
@@ -531,36 +595,199 @@ def create_pdf(report_text, target_name):
     safe_target = sanitize_text(target_name)
 
     pdf = IntelligenceReport()
+    pdf.alias_nb_pages()
     pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 16)
+    # Title block
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(30, 40, 60)
     pdf.cell(0, 10, f"Subject: {safe_target}", ln=True)
-    pdf.ln(10)
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, f"Report Date: {datetime.now().strftime('%B %d, %Y')}", ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(6)
 
-    pdf.set_font("Helvetica", size=11)
+    # Separator
+    pdf.set_draw_color(200, 200, 200)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(4)
+
+    # Extract risk score and tier for badge (if present)
+    score_match = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)\s*/\s*10', safe_report, re.IGNORECASE)
+    tier_match = re.search(r'RISK TIER[:\s\n]*(.*?)(?:\n\n|\n##)', safe_report, re.IGNORECASE | re.DOTALL)
+    if not tier_match:
+        tier_match = re.search(r'(LOW RISK|MODERATE RISK|ELEVATED RISK|HIGH RISK)[^\n]*', safe_report, re.IGNORECASE)
+
+    if score_match:
+        score_text = score_match.group(1)
+        tier_text = tier_match.group(1).strip() if tier_match else ""
+        # Clean tier text to one line
+        for tier_label in ["HIGH RISK", "ELEVATED RISK", "MODERATE RISK", "LOW RISK"]:
+            if tier_label in tier_text.upper():
+                idx = tier_text.upper().index(tier_label)
+                end = tier_text.find("\n", idx)
+                tier_text = tier_text[idx:end].strip() if end != -1 else tier_text[idx:].strip()
+                break
+        pdf.risk_badge(score_text, tier_text)
+
+    # Parse and render body
+    pdf.set_font("Helvetica", size=10)
+    in_bullet_section = False
 
     for line in safe_report.split('\n'):
-        if line.strip() == "":
-            pdf.ln(4)
+        stripped = line.strip()
+        if stripped == "" or stripped == "---":
+            pdf.ln(3)
+            in_bullet_section = False
             continue
-        if line.startswith("##"):
-            pdf.ln(2)
-            pdf.set_font("Helvetica", "B", 12)
-            safe_header = textwrap.fill(line.replace("#", "").strip(), width=85, break_long_words=True)
-            pdf.multi_cell(0, 10, safe_header)
-            pdf.set_font("Helvetica", size=11)
-        else:
-            safe_line = textwrap.fill(line, width=85, break_long_words=True)
+
+        # H1 headers
+        if line.startswith("# ") and not line.startswith("##"):
+            pdf.section_header(line)
+            in_bullet_section = False
+            continue
+
+        # H2 headers
+        if line.startswith("## "):
+            pdf.section_header(line)
+            in_bullet_section = False
+            continue
+
+        # H3 headers
+        if line.startswith("### "):
+            # Skip the risk score/tier lines we already rendered as badge
+            if any(kw in stripped.upper() for kw in ["WEIGHTED RISK SCORE", "RISK TIER"]):
+                continue
+            pdf.subsection_header(line)
+            in_bullet_section = False
+            continue
+
+        # Bullet points
+        if stripped.startswith(("-", "•", "*")) and len(stripped) > 2:
+            pdf.bullet_item(stripped)
+            in_bullet_section = True
+            continue
+
+        # Lines starting with emoji indicators
+        if any(stripped.startswith(ind) for ind in ["🔴", "🟡", "🟢", "[RED]", "[YEL]", "[GRN]"]):
+            pdf.bullet_item(stripped)
+            in_bullet_section = True
+            continue
+
+        # Bold lines (**text**)
+        bold_match = re.match(r'^\*\*(.*?)\*\*(.*)$', stripped)
+        if bold_match:
+            pdf.set_font("Helvetica", "B", 10)
             try:
-                pdf.multi_cell(0, 8, safe_line)
+                pdf.multi_cell(0, 6, sanitize_text(f"{bold_match.group(1)}{bold_match.group(2)}"))
             except Exception:
                 pass
+            pdf.set_font("Helvetica", size=10)
+            continue
+
+        # Normal text
+        in_bullet_section = False
+        pdf.set_font("Helvetica", size=10)
+        safe_line = textwrap.fill(stripped, width=90, break_long_words=True)
+        try:
+            pdf.multi_cell(0, 6, safe_line)
+        except Exception:
+            pass
 
     return pdf.output()
 
 
 # ============================================================
-# 4. PARALLEL AGENT RUNNER WITH RETRY
+# 4. CHAT RETRIEVAL HELPER
+# ============================================================
+def chunk_report(report_text):
+    """Split a report into labeled sections for targeted retrieval."""
+    sections = {}
+    current_label = "Introduction"
+    current_lines = []
+
+    for line in report_text.split('\n'):
+        if line.startswith("## ") or line.startswith("# "):
+            if current_lines:
+                sections[current_label] = "\n".join(current_lines)
+            current_label = line.replace("#", "").strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        sections[current_label] = "\n".join(current_lines)
+
+    return sections
+
+
+def retrieve_relevant_sections(question, sections, max_sections=4):
+    """Simple keyword-based retrieval to find the most relevant report sections."""
+    question_lower = question.lower()
+    scored = []
+
+    # Keyword mappings for common question types
+    keyword_boost = {
+        "risk": ["risk scorecard", "risk score", "risk tier", "key findings", "executive summary"],
+        "legal": ["legal", "compliance", "litigation", "court", "lawsuit"],
+        "financial": ["financial", "revenue", "funding", "sec", "fiscal"],
+        "background": ["osint", "background", "overview", "introduction"],
+        "license": ["people records", "license", "certification", "bar"],
+        "donation": ["people records", "fec", "donation", "political"],
+        "sanction": ["osint", "ofac", "sanction", "sdn"],
+        "score": ["risk scorecard", "risk score", "weighted", "risk tier"],
+        "summary": ["executive summary", "key findings"],
+        "recommend": ["executive summary", "key findings", "risk tier"],
+    }
+
+    for section_label, section_text in sections.items():
+        score = 0
+        label_lower = section_label.lower()
+        text_lower = section_text.lower()
+
+        # Direct keyword match in question vs section label
+        question_words = set(re.findall(r'\w+', question_lower))
+        label_words = set(re.findall(r'\w+', label_lower))
+        overlap = question_words & label_words
+        score += len(overlap) * 3
+
+        # Check question words against section content
+        for word in question_words:
+            if len(word) > 3 and word in text_lower:
+                score += 1
+
+        # Boost from keyword mappings
+        for trigger, boost_labels in keyword_boost.items():
+            if trigger in question_lower:
+                for bl in boost_labels:
+                    if bl in label_lower:
+                        score += 5
+
+        # Executive summary and key findings are always somewhat relevant
+        if any(kw in label_lower for kw in ["executive summary", "key findings"]):
+            score += 1
+
+        scored.append((score, section_label, section_text))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    selected = scored[:max_sections]
+
+    # Always include executive summary if it exists and isn't already selected
+    summary_labels = [s[1] for s in selected]
+    for s_score, s_label, s_text in scored:
+        if "executive summary" in s_label.lower() and s_label not in summary_labels:
+            selected.append((s_score, s_label, s_text))
+            break
+
+    context = "\n\n---\n\n".join(
+        [f"## {label}\n{text}" for _, label, text in selected]
+    )
+    return context
+
+
+# ============================================================
+# 5. PARALLEL AGENT RUNNER WITH RETRY
 # ============================================================
 def run_agent_task(agent, task, inputs, results_dict, key, progress_dict, start_delay=0):
     """Runs a single CrewAI agent/task in a thread with retry logic."""
@@ -596,27 +823,141 @@ def run_agent_task(agent, task, inputs, results_dict, key, progress_dict, start_
 
 
 # ============================================================
-# 5. STREAMLIT INTERFACE
+# 6. STREAMLIT INTERFACE
 # ============================================================
 st.set_page_config(page_title="Partner Intel AI", page_icon="🕵️‍♂️", layout="wide")
 
+# --- Session state initialization ---
 if "report_result" not in st.session_state:
     st.session_state.report_result = None
 if "report_target" not in st.session_state:
     st.session_state.report_target = None
+if "report_sections" not in st.session_state:
+    st.session_state.report_sections = {}
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
 if "comms_drafts" not in st.session_state:
     st.session_state.comms_drafts = None
+if "investigation_history" not in st.session_state:
+    st.session_state.investigation_history = []
 
+# --- Sidebar ---
 with st.sidebar:
     st.header("🔑 API Keys")
     google_key = st.text_input("Gemini API Key", type="password")
     tavily_key = st.text_input("Tavily API Key", type="password")
 
+    # Investigation History
+    st.markdown("---")
+    st.header("📁 Investigation History")
+    if st.session_state.investigation_history:
+        for i, past in enumerate(reversed(st.session_state.investigation_history)):
+            col_hist, col_load = st.columns([3, 1])
+            with col_hist:
+                risk_preview = ""
+                score_m = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', past.get("report", ""), re.IGNORECASE)
+                if score_m:
+                    s = float(score_m.group(1))
+                    if s <= 3.0:
+                        risk_preview = f" 🟢 {s:.1f}"
+                    elif s <= 5.0:
+                        risk_preview = f" 🟡 {s:.1f}"
+                    elif s <= 7.0:
+                        risk_preview = f" 🟠 {s:.1f}"
+                    else:
+                        risk_preview = f" 🔴 {s:.1f}"
+                st.caption(f"**{past['target']}**{risk_preview}\n{past['date']}")
+            with col_load:
+                if st.button("Load", key=f"load_{i}"):
+                    st.session_state.report_result = past["report"]
+                    st.session_state.report_target = past["target"]
+                    st.session_state.report_sections = chunk_report(past["report"])
+                    st.session_state.comms_drafts = past.get("comms")
+                    st.session_state.chat_messages = []
+                    st.rerun()
+
+        st.markdown("---")
+        if st.button("🗑️ Clear History"):
+            st.session_state.investigation_history = []
+            st.rerun()
+    else:
+        st.caption("No past investigations yet.")
+
+    # Compare mode
+    if len(st.session_state.investigation_history) >= 2:
+        st.markdown("---")
+        st.header("⚖️ Compare Subjects")
+        compare_options = [f"{h['target']} ({h['date']})" for h in st.session_state.investigation_history]
+        compare_a = st.selectbox("Subject A", compare_options, index=0)
+        compare_b = st.selectbox("Subject B", compare_options, index=min(1, len(compare_options) - 1))
+        if st.button("Compare"):
+            st.session_state["compare_mode"] = True
+            st.session_state["compare_a"] = compare_a
+            st.session_state["compare_b"] = compare_b
+            st.rerun()
+
+
+# --- Main content ---
 st.title("🕵️‍♂️ Business Partner Due Diligence")
 
-# --- Target type selector ---
+# --- Comparison display ---
+if st.session_state.get("compare_mode"):
+    st.subheader("⚖️ Subject Comparison")
+
+    def get_hist(label):
+        for h in st.session_state.investigation_history:
+            if f"{h['target']} ({h['date']})" == label:
+                return h
+        return None
+
+    hist_a = get_hist(st.session_state["compare_a"])
+    hist_b = get_hist(st.session_state["compare_b"])
+
+    if hist_a and hist_b:
+        def extract_scores(report):
+            categories = [
+                "Litigation History", "Financial Stability", "Regulatory Compliance",
+                "Reputation", "Corporate Governance", "Transparency",
+            ]
+            scores = {}
+            for cat in categories:
+                m = re.search(rf'{cat}.*?Score[:\s]*(\d+\.?\d*)\s*/\s*10', report, re.IGNORECASE)
+                scores[cat] = float(m.group(1)) if m else 0.0
+            wm = re.search(r'WEIGHTED RISK SCORE[:\s]*(\d+\.?\d*)', report, re.IGNORECASE)
+            scores["OVERALL"] = float(wm.group(1)) if wm else 0.0
+            return scores
+
+        scores_a = extract_scores(hist_a["report"])
+        scores_b = extract_scores(hist_b["report"])
+
+        comp_col1, comp_col2, comp_col3 = st.columns([2, 1, 2])
+        with comp_col1:
+            st.markdown(f"### {hist_a['target']}")
+            st.metric("Overall Risk", f"{scores_a['OVERALL']:.1f} / 10")
+        with comp_col2:
+            st.markdown("### vs.")
+        with comp_col3:
+            st.markdown(f"### {hist_b['target']}")
+            st.metric("Overall Risk", f"{scores_b['OVERALL']:.1f} / 10")
+
+        st.markdown("#### Category Breakdown")
+        for cat in ["Litigation History", "Financial Stability", "Regulatory Compliance",
+                     "Reputation", "Corporate Governance", "Transparency"]:
+            c1, c2, c3 = st.columns([2, 3, 2])
+            with c1:
+                st.write(f"**{scores_a[cat]:.1f}**")
+            with c2:
+                st.write(f"**{cat}**")
+            with c3:
+                st.write(f"**{scores_b[cat]:.1f}**")
+
+    if st.button("← Back to Investigation"):
+        st.session_state["compare_mode"] = False
+        st.rerun()
+
+    st.stop()
+
+# --- Target input ---
 target_type = st.radio(
     "What are you investigating?",
     ["🏢 Company / Organization", "👤 Individual Person"],
@@ -629,7 +970,7 @@ target_name = st.text_input(
     placeholder="e.g., John Smith" if is_person else "e.g., Apple Inc.",
 )
 
-# --- Initialize all person-specific variables with defaults ---
+# Initialize all person-specific variables with defaults
 residence_location = ""
 work_location = ""
 license_location = ""
@@ -666,28 +1007,40 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
                 placeholder="e.g., New Jersey, Pennsylvania",
                 help="State(s) where they hold professional licenses. Separate multiple with commas.",
             )
-        # Combine all locations for backward compatibility
         all_locations = [loc.strip() for loc in [residence_location, work_location, license_location] if loc.strip()]
-        # Also split comma-separated license jurisdictions
         expanded_locations = []
         for loc in all_locations:
             expanded_locations.extend([l.strip() for l in loc.split(",") if l.strip()])
-        all_locations = list(dict.fromkeys(expanded_locations))  # dedupe, preserve order
+        all_locations = list(dict.fromkeys(expanded_locations))
         location = ", ".join(all_locations) if all_locations else ""
 
         industry = st.text_input(
             "Profession or Industry",
             placeholder="e.g., Real Estate Attorney",
         )
+
+        st.markdown("**Known Affiliations** (critical for finding the right person)")
+        aff_col1, aff_col2 = st.columns(2)
+        with aff_col1:
+            current_employer = st.text_input(
+                "Current Employer / Company",
+                placeholder="e.g., Manifest",
+                help="The person's current employer or company",
+            )
+        with aff_col2:
+            former_employers = st.text_input(
+                "Former Employers (comma-separated)",
+                placeholder="e.g., EY Law, Microsoft",
+                help="Previous companies or firms. Separate multiple with commas.",
+            )
+        known_affiliations = []
+        if current_employer.strip():
+            known_affiliations.append(current_employer.strip())
+        if former_employers.strip():
+            known_affiliations.extend([e.strip() for e in former_employers.split(",") if e.strip()])
     else:
         location = st.text_input("Location (State/Country)", placeholder="e.g., New York, NY")
         all_locations = [location.strip()] if location.strip() else []
-        residence_location = ""
-        work_location = ""
-        license_location = ""
-        current_employer = ""
-        former_employers = ""
-        known_affiliations = []
         industry = st.text_input(
             "Industry or Specialty",
             placeholder="e.g., Fintech",
@@ -703,7 +1056,7 @@ with st.expander("⚙️ Optional Search Criteria" + (" (Recommended)" if is_per
     )
 
 st.markdown("### 🗄️ Deep Dive Databases")
-st.caption("These use dedicated API integrations — not just web search — for authoritative results.")
+st.caption("These use dedicated API integrations for authoritative results.")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
@@ -728,8 +1081,7 @@ deep_dive_active = use_sec or use_courts or use_registry or use_ofac or use_peop
 if deep_dive_active:
     st.info(
         "⏱️ **Extended Wait Time:** Deep dive databases involve direct API calls to government "
-        "and legal databases, which may have rate limits. Investigation may take up to "
-        "**5 minutes**. Please do not refresh the page."
+        "and legal databases. Investigation may take up to **5 minutes**."
     )
 
 if st.button("Start AI Investigation"):
@@ -772,16 +1124,13 @@ if st.button("Start AI Investigation"):
         current_date_str = datetime.now().strftime("%B %d, %Y")
         inputs = {"company_name": search_context, "current_date": current_date_str}
 
-        # -------------------------------------------------------
-        # Build tool sets per agent based on user selections
-        # -------------------------------------------------------
+        # Build tool sets per agent
         osint_tools = [search_tool, scrape_tool]
         legal_tools = [search_tool, scrape_tool]
         financial_tools = [search_tool, scrape_tool]
 
         if is_person and known_affiliations:
             osint_tools.append(IdentityResolutionTool())
-
         if use_registry:
             osint_tools.append(OpenCorporatesTool())
         if use_ofac:
@@ -791,9 +1140,7 @@ if st.button("Start AI Investigation"):
         if use_sec:
             financial_tools.append(SECEdgarTool())
 
-        # -------------------------------------------------------
         # Progress tracking
-        # -------------------------------------------------------
         progress_placeholder = st.empty()
 
         agent_labels = {
@@ -818,9 +1165,7 @@ if st.button("Start AI Investigation"):
         progress = {k: "pending" for k in agent_labels}
         progress_placeholder.markdown(render_progress(progress))
 
-        # -------------------------------------------------------
         # Build agents
-        # -------------------------------------------------------
         investigator = Agent(
             role="OSINT Lead",
             goal="Uncover public history and background for {company_name}",
@@ -863,9 +1208,7 @@ if st.button("Start AI Investigation"):
             max_execution_time=300,
         )
 
-        # -------------------------------------------------------
-        # Build task descriptions with conditional tool instructions
-        # -------------------------------------------------------
+        # Build task descriptions
         t1_desc = (
             "Gather background, location, and general news for {company_name}. "
             "If you find a relevant link, scrape it for details. "
@@ -906,8 +1249,8 @@ if st.button("Start AI Investigation"):
             t1_desc += (
                 f"\n\nMULTI-JURISDICTION NOTICE: This individual may be associated with "
                 f"multiple locations: {', '.join(all_locations)}. Search for the subject's "
-                f"presence, business activity, and public records in ALL of these locations, "
-                f"not just one. Note which location each finding relates to."
+                f"presence, business activity, and public records in ALL of these locations. "
+                f"Note which location each finding relates to."
             )
         if use_registry:
             t1_desc += (
@@ -929,8 +1272,7 @@ if st.button("Start AI Investigation"):
         )
         if is_person and known_affiliations:
             t2_desc += (
-                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. To avoid confusing "
-                f"this person with others who share the same name, ALWAYS combine the name "
+                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. ALWAYS combine the name "
                 f"with a known employer in your searches. Known affiliations:\n"
             )
             if current_employer:
@@ -938,15 +1280,13 @@ if st.button("Start AI Investigation"):
             if former_employers.strip():
                 t2_desc += f"- FORMER: {former_employers.strip()}\n"
             t2_desc += (
-                f"For example, search: \"{target_name}\" \"{known_affiliations[0]}\" lawsuit\n"
-                f"NEVER search for just the bare name plus legal terms — too many false positives."
+                f"For example: \"{target_name}\" \"{known_affiliations[0]}\" lawsuit\n"
+                f"NEVER search for just the bare name plus legal terms."
             )
         if is_person and all_locations:
             t2_desc += (
                 f"\n\nMULTI-JURISDICTION NOTICE: This individual may have legal records in "
-                f"multiple locations: {', '.join(all_locations)}. Search court records and "
-                f"regulatory actions in ALL of these jurisdictions. Note which jurisdiction "
-                f"each finding comes from."
+                f"multiple locations: {', '.join(all_locations)}. Search ALL jurisdictions."
             )
         if use_courts:
             t2_desc += (
@@ -963,17 +1303,14 @@ if st.button("Start AI Investigation"):
         )
         if is_person and known_affiliations:
             t3_desc += (
-                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. To find the RIGHT "
-                f"person's financial footprint, ALWAYS combine the name with known employers:\n"
+                f"\n\nIDENTITY DISAMBIGUATION: This is a person search. ALWAYS combine the name "
+                f"with known employers:\n"
             )
             if current_employer:
                 t3_desc += f"- CURRENT: {current_employer}\n"
             if former_employers.strip():
                 t3_desc += f"- FORMER: {former_employers.strip()}\n"
-            t3_desc += (
-                f"Search for financial activity at each of these organizations tied to this person. "
-                f"NEVER search for just the bare name alone."
-            )
+            t3_desc += f"NEVER search for just the bare name alone."
         if use_sec:
             t3_desc += (
                 "\n\nYou have the 'sec_edgar_search' tool available. "
@@ -982,7 +1319,7 @@ if st.button("Start AI Investigation"):
 
         t1 = Task(
             description=t1_desc,
-            expected_output="A concise, well-organized summary of the subject's background in your own words. No raw website text. Written STRICTLY in English.",
+            expected_output="A concise, well-organized summary in your own words. No raw website text. Written STRICTLY in English.",
             agent=investigator,
         )
         t2 = Task(
@@ -992,21 +1329,16 @@ if st.button("Start AI Investigation"):
         )
         t3 = Task(
             description=t3_desc,
-            expected_output="A concise report on the subject's financial footprint with specific figures. No raw website text. Written STRICTLY in English.",
+            expected_output="A concise report on financial footprint with specific figures. No raw website text. Written STRICTLY in English.",
             agent=financial_analyst,
         )
 
-        # -------------------------------------------------------
         # People Records agent (conditional)
-        # -------------------------------------------------------
         people_agent = None
         people_task = None
         if is_person and use_people_records:
-            # Build a location string for the people records tool
             people_loc_str = ", ".join(all_locations) if all_locations else ""
-            people_tool_input = (
-                f"{target_name} | {people_loc_str}" if people_loc_str else target_name
-            )
+            people_tool_input = f"{target_name} | {people_loc_str}" if people_loc_str else target_name
 
             people_agent = Agent(
                 role="People Intelligence Analyst",
@@ -1060,15 +1392,12 @@ if st.button("Start AI Investigation"):
                 description=people_search_instructions,
                 expected_output=(
                     "A concise report on the individual's professional background, licenses "
-                    "(specifying which state/jurisdiction each is held in), donations, and "
-                    "any disciplinary or legal flags. Written STRICTLY in English."
+                    "(specifying which jurisdiction), donations, and any flags. Written STRICTLY in English."
                 ),
                 agent=people_agent,
             )
 
-        # -------------------------------------------------------
         # Run research agents in parallel (staggered)
-        # -------------------------------------------------------
         agent_results = {}
         threads = [
             threading.Thread(
@@ -1104,14 +1433,11 @@ if st.button("Start AI Investigation"):
 
         progress_placeholder.markdown(render_progress(progress))
 
-        # Re-assert API keys after threads complete
         os.environ["GEMINI_API_KEY"] = google_key
         os.environ["GOOGLE_API_KEY"] = google_key
         os.environ["TAVILY_API_KEY"] = tavily_key
 
-        # -------------------------------------------------------
-        # Risk manager with structured rubric
-        # -------------------------------------------------------
+        # Risk manager
         progress["risk"] = "running"
         progress_placeholder.markdown(render_progress(progress))
 
@@ -1182,6 +1508,7 @@ if st.button("Start AI Investigation"):
 
             st.session_state.report_result = full_report
             st.session_state.report_target = target_name
+            st.session_state.report_sections = chunk_report(full_report)
             progress["risk"] = "complete"
             progress_placeholder.markdown(render_progress(progress))
 
@@ -1189,7 +1516,7 @@ if st.button("Start AI Investigation"):
             progress["risk"] = "error"
             progress_placeholder.markdown(render_progress(progress))
             st.error(f"🚨 **Risk assessment failed:** {str(e)}")
-            st.session_state.report_result = (
+            partial = (
                 f"# Partial Report: {target_name}\n"
                 f"**Date:** {current_date_str}\n\n"
                 f"⚠️ Risk scoring failed. Raw findings below.\n\n"
@@ -1198,14 +1525,12 @@ if st.button("Start AI Investigation"):
                 f"## Financial Analysis\n{agent_results.get('financial', 'No data.')}"
             )
             if is_person and use_people_records:
-                st.session_state.report_result += (
-                    f"\n\n## People Records\n{agent_results.get('people', 'No data.')}"
-                )
+                partial += f"\n\n## People Records\n{agent_results.get('people', 'No data.')}"
+            st.session_state.report_result = partial
             st.session_state.report_target = target_name
+            st.session_state.report_sections = chunk_report(partial)
 
-        # -------------------------------------------------------
         # Communications drafts
-        # -------------------------------------------------------
         if st.session_state.report_result:
             progress["comms"] = "running"
             progress_placeholder.markdown(render_progress(progress))
@@ -1238,9 +1563,17 @@ if st.button("Start AI Investigation"):
             progress["comms"] = "error"
             progress_placeholder.markdown(render_progress(progress))
 
+        # Save to investigation history
+        st.session_state.investigation_history.append({
+            "target": target_name,
+            "date": current_date_str,
+            "report": st.session_state.report_result,
+            "comms": st.session_state.comms_drafts,
+        })
+
 
 # ============================================================
-# 6. DISPLAY REPORT, COMMS, AND CHATBOT
+# 7. DISPLAY REPORT, COMMS, AND CHATBOT
 # ============================================================
 if st.session_state.report_result:
     st.markdown("---")
@@ -1260,6 +1593,7 @@ if st.session_state.report_result:
         with st.expander("📬 Quick Share: Auto-Generated Email & Slack Drafts", expanded=True):
             st.markdown(st.session_state.comms_drafts)
 
+    # --- CHATBOT WITH SMART RETRIEVAL ---
     st.markdown("---")
     st.subheader("💬 Ask the Report")
     st.caption("Ask specific questions about the data uncovered above.")
@@ -1275,16 +1609,25 @@ if st.session_state.report_result:
             st.chat_message("user").markdown(user_question)
             st.session_state.chat_messages.append({"role": "user", "content": user_question})
 
+            # Smart retrieval: send only relevant sections instead of full report
+            sections = st.session_state.report_sections
+            if sections:
+                relevant_context = retrieve_relevant_sections(user_question, sections)
+            else:
+                relevant_context = st.session_state.report_result
+
+            # Sliding window: last 10 messages
             recent_history = st.session_state.chat_messages[-10:]
             chat_history_text = "\n".join(
                 [f"{m['role'].capitalize()}: {m['content']}" for m in recent_history[:-1]]
             )
 
             prompt = (
-                f"Context (Intelligence Report):\n{st.session_state.report_result}\n\n"
+                f"Context (Relevant sections from Intelligence Report):\n{relevant_context}\n\n"
                 f"Past Chat History:\n{chat_history_text}\n\n"
                 f"User's New Question: {user_question}\n\n"
-                f"Please answer the question using ONLY the provided context."
+                f"Please answer the question using ONLY the provided context. "
+                f"If the answer is not in the provided sections, say so clearly."
             )
 
             try:
